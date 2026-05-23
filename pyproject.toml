@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aurotek-edge-detection"
+version = "0.1.0"
+description = "Sobel-based PCB tab intrusion measurement for Aurotek Router camera images."
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=4.9",
+    "numpy>=1.24"
+]
+
+[project.scripts]
+aurotek-edge-measure = "aurotek_edge_detection.router_intrusion_main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

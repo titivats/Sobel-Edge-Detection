@@ -1,0 +1,26 @@
+{
+  "recipe_name": "DEFAULT_TRIAL",
+  "description": "Default trial settings for Aurotek Router Sobel intrusion measurement.",
+  "input_path": "E:\\Project_Edge_detection\\SepData\\camera",
+  "output_path": "E:\\Project_Edge_detection\\outputs_intrusion_sobel",
+  "calibration": {
+    "pixels_per_mm": 1,
+    "note": "Trial value only. Replace with real camera calibration before production."
+  },
+  "detection": {
+    "black_threshold": 55,
+    "min_span": 30,
+    "baseline_percentile": 10.0,
+    "sobel_threshold_ratio": 0.12,
+    "display_edge_thickness": 2,
+    "roi_margin": 60,
+    "orientation": "auto",
+    "black_edge_search_radius": 18
+  },
+  "focus_zone": {
+    "x_min_ratio": 0.20,
+    "x_max_ratio": 0.85,
+    "y_min_ratio": 0.15,
+    "y_max_ratio": 0.85
+  }
+}
