@@ -39,16 +39,23 @@ Tune Sobel output:
   --edge-view all
 ```
 
-Open the manual tuning UI:
+Open the Sobel Fine Tune UI. This window compares `Original Image` with
+`Sobel Edge Detection` and lets you tune the black/white edge output:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_sobel_tuning_ui.ps1
 ```
 
-Build the Fine Tune executable:
+Build the Sobel Fine Tune executable:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_sobel_tuning_exe.ps1
+```
+
+Run the generated Sobel tuning UI:
+
+```powershell
+.\dist\Sobel_YOLO_Fine_Tune\Sobel_YOLO_Fine_Tune.exe
 ```
 
 ## Outputs
@@ -90,6 +97,18 @@ The trained weights are written under:
 Yolo_train\runs\sobel_yolo\weights\best.pt
 ```
 
+Build the YOLO training executable:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_yolo_training_exe.ps1
+```
+
+Run the generated YOLO training executable:
+
+```powershell
+.\dist\Sobel_YOLO_Train\Sobel_YOLO_Train.exe --epochs 50 --imgsz 640 --batch 4 --workers 0
+```
+
 Run prediction with a trained model:
 
 ```powershell
@@ -124,6 +143,12 @@ Build the real-time UI executable:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_realtime_predict_exe.ps1
 ```
 
+Run the generated executable:
+
+```powershell
+.\dist\Realtime_Sobel_YOLO\Realtime_Sobel_YOLO.exe
+```
+
 ## File Layout
 
 ```text
@@ -150,6 +175,7 @@ sobel_edge_detect.py             Production Sobel-only wrapper.
 - `realtime_product_info.py`: CSV timestamp matching, ProductInfo parsing, and caches.
 - `realtime_overlay.py`: Sobel conversion, PASS/NG status, and image annotations.
 - `realtime_config.py`: default paths, colors, app icon, and CLI arguments.
+- `app_paths.py`: shared project-root and runtime path resolution for source and exe runs.
 
 ## Dependencies
 

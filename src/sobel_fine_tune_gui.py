@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from command_line_interface import DEFAULT_INPUT_PATH
+from app_paths import DEFAULT_IMAGE_DIR, DEFAULT_RECIPE_DIR, DEFAULT_TUNING_OUTPUT_DIR
 from image_file_discovery import find_images
 from sobel_edge_detection import create_sobel_edge_masks, thicken_edge_for_display
 from sobel_tuning_ui_main import _safe_recipe_name, save_recipe
@@ -67,13 +67,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recipe-dir",
         type=Path,
-        default=Path("configs") / "recipes",
+        default=DEFAULT_RECIPE_DIR,
         help="Folder for saved tuned recipes. Default: configs/recipes.",
     )
     parser.add_argument(
         "--output-image-dir",
         type=Path,
-        default=Path("Output_files") / "tuning_saved",
+        default=DEFAULT_TUNING_OUTPUT_DIR,
         help="Folder for saved Sobel fine-tune images. Default: Output_files/tuning_saved.",
     )
     return parser.parse_args()
@@ -102,8 +102,9 @@ class SobelFineTuneApp:
         self.saved_settings: dict[str, GuiTuneSettings] = {}
 
         self.program_name_var = tk.StringVar(value=args.program_name)
-        startup_input = args.input or (DEFAULT_INPUT_PATH if DEFAULT_INPUT_PATH.exists() else None)
-        self.input_image_path_var = tk.StringVar(value=str(startup_input or Path("Input_files")))
+        startup_input = args.input
+        default_input = startup_input or DEFAULT_IMAGE_DIR
+        self.input_image_path_var = tk.StringVar(value=str(default_input))
         self.output_image_dir_var = tk.StringVar(value=str(args.output_image_dir))
         self.status_var = tk.StringVar(value="Select input image path to begin. Actual selected part: none.")
         self.image_count_var = tk.StringVar(value="0 / 0")
@@ -118,7 +119,7 @@ class SobelFineTuneApp:
 
         self._build_layout()
         if startup_input is not None:
-            self._load_paths(find_images(startup_input))
+            self.root.after(100, lambda: self._load_input_path(startup_input))
 
     def run(self) -> None:
         self.root.mainloop()
@@ -358,18 +359,24 @@ class SobelFineTuneApp:
     def _select_input_image_path(self) -> None:
         folder = filedialog.askdirectory(title="Select input image path")
         if folder:
-            input_path = Path(folder)
-            self.input_image_path_var.set(str(input_path))
-            images = find_images(input_path)
-            if not images:
-                self.status_var.set(f"No supported images found in input image path: {input_path}")
-                return
-            self._load_paths(images)
+            self._load_input_path(Path(folder))
 
     def _select_output_image_dir(self) -> None:
         folder = filedialog.askdirectory(title="Select output image path")
         if folder:
             self.output_image_dir_var.set(folder)
+
+    def _load_input_path(self, input_path: Path) -> None:
+        self.input_image_path_var.set(str(input_path))
+        self.status_var.set(f"Loading images from: {input_path}")
+        self.root.update_idletasks()
+
+        images = find_images(input_path)
+        if not images:
+            self.status_var.set(f"No supported images found in input image path: {input_path}")
+            self._show_empty()
+            return
+        self._load_paths(images)
 
     def _load_paths(self, paths: list[Path]) -> None:
         if not paths:

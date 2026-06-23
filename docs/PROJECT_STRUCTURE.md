@@ -1,52 +1,101 @@
 # Project Structure
 
+This project has four runtime workflows. Keep new code close to the workflow it
+belongs to, and keep shared path or image helpers in one place.
+
+## Runtime Apps
+
 ```text
-Project_Edge_detection/
-  configs/
-    default_recipe.json          Default trial tuning values.
-  docs/
-    PROJECT_STRUCTURE.md         File layout and ownership.
-  scripts/
-    run_router_intrusion.ps1     PowerShell runner for daily operation.
-  src/
-    aurotek_edge_detection/
-      command_line_interface.py  Command-line argument parsing and orchestration.
-      dark_background_mask.py    Black background mask creation.
-      focus_zone.py              Focus zone calculation and masking.
-      image_file_discovery.py    Supported image file discovery.
-      intrusion_measurement.py   Per-image measurement workflow.
-      annotated_image_renderer.py Annotated image drawing.
-      measurement_data_models.py Shared dataclasses.
-      measurement_image_output.py Sobel/annotated image saving.
-      measurement_statistics.py  Min/max and baseline helper math.
-      measurement_csv_writer.py  CSV writing.
-      router_intrusion_main.py   Small production entrypoint.
-      slot_boundary_detection.py Sobel boundary selection.
-      slot_orientation_roi.py    Slot direction and ROI selection.
-      sobel_edge_detection.py    Sobel edge mask creation.
-  tools/
-    sobel_measure.py             Older general-purpose Sobel experiment.
-  tests/
-    .gitkeep                     Reserved for future automated tests.
-  SepData/
-    camera/                      Camera images from the Aurotek Router.
-  outputs_intrusion_sobel/
-    annotated/                   Sobel images with focus zone and measurements.
-    sobel_edges/                 Saved Sobel edge images.
-    intrusion_measurements.csv   Measurement result table.
-  router_intrusion_measure.py    Backward-compatible wrapper.
-  sobel_measure.py               Backward-compatible wrapper for legacy tool.
-  requirements.txt               Python dependencies.
-  README.md                      Operator and developer guide.
+sobel_edge_detect.py
+  Batch Sobel edge image generator.
+
+sobel_tuning_ui.py
+  Sobel Fine Tune UI. Shows Original Image and Sobel Edge Detection side by side.
+  Built as dist/Sobel_YOLO_Fine_Tune/Sobel_YOLO_Fine_Tune.exe.
+
+src/realtime_predict_ui.py
+  Real-time Sobel + YOLO monitor UI.
+  Built as dist/Realtime_Sobel_YOLO/Realtime_Sobel_YOLO.exe.
+
+Yolo_train/training.py
+  YOLO training command-line runner.
+  Built as dist/Sobel_YOLO_Train/Sobel_YOLO_Train.exe when needed.
 ```
 
-## Ownership
+## Source Modules
 
-- `src/aurotek_edge_detection/router_intrusion_main.py` is the production entrypoint.
-- `src/aurotek_edge_detection/intrusion_measurement.py` is the main per-image workflow.
-- `src/aurotek_edge_detection/slot_boundary_detection.py` contains Sobel boundary selection.
-- `src/aurotek_edge_detection/slot_orientation_roi.py` contains slot direction and ROI logic.
-- `src/aurotek_edge_detection/sobel_edge_detection.py` creates the Sobel edge masks.
-- `configs/default_recipe.json` is a recipe template. The current CLI still receives values through arguments; this file documents the tuned defaults for each model recipe.
-- `SepData/`, `outputs_intrusion_sobel/`, and `venv/` are runtime folders, not source code.
-- `tools/sobel_measure.py` is kept for reference and experiments. New Aurotek Router work should use `router_intrusion_measure.py`.
+```text
+src/app_paths.py
+  Shared project-root and runtime path lookup. Use this for default folders.
+
+src/command_line_interface.py
+  Arguments and orchestration for batch Sobel edge generation.
+
+src/image_file_discovery.py
+  Supported image search for files and folders.
+
+src/sobel_edge_detection.py
+  Core Sobel mask logic. Keep image-processing math here.
+
+src/sobel_edge_output.py
+  Writes Sobel edge images to Output_files.
+
+src/sobel_fine_tune_gui.py
+  Tkinter Fine Tune UI for adjusting black/white Sobel edge output.
+
+src/sobel_tuning_ui_main.py
+  Older OpenCV tuning window and recipe save helpers reused by the Tkinter UI.
+
+src/realtime_config.py
+  Real-time UI arguments, colors, and defaults.
+
+src/realtime_app.py
+  Tkinter real-time monitor layout, worker thread, and UI queue handling.
+
+src/realtime_predictor.py
+  Watches image folders and runs YOLO prediction.
+
+src/realtime_overlay.py
+  Converts images to Sobel view and draws PASS/NG overlays.
+
+src/realtime_product_info.py
+  Matches image timestamps to Product Info CSV files.
+```
+
+## Data And Runtime Folders
+
+```text
+configs/
+  Recipe templates and saved tuning recipes.
+
+Yolo_train/
+  YOLO dataset, labels, data.yaml, and trained weights.
+
+Input_files/
+  Sample source data kept with the project.
+
+Output_files/
+  Runtime outputs. Do not treat this as source code.
+
+dist/
+  Built exe folders. Keep each exe inside its folder with _internal.
+
+build/
+  PyInstaller temporary files.
+```
+
+## Build Scripts
+
+```text
+scripts/build_sobel_tuning_exe.ps1
+  Builds the Sobel Fine Tune UI as Sobel_YOLO_Fine_Tune.exe.
+
+scripts/build_realtime_predict_exe.ps1
+  Builds the real-time monitor as Realtime_Sobel_YOLO.exe.
+
+scripts/build_yolo_training_exe.ps1
+  Builds the YOLO training CLI as Sobel_YOLO_Train.exe.
+```
+
+Use `onedir` builds for normal operation. They open faster than `onefile`
+because large dependencies do not need to be unpacked on every launch.

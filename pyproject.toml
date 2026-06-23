@@ -9,16 +9,19 @@ description = "Sobel edge detection for Aurotek Router camera images."
 requires-python = ">=3.10"
 dependencies = [
     "opencv-python>=4.9",
-    "numpy>=1.24"
+    "numpy>=1.24",
+    "PyYAML>=6.0"
 ]
 
 [project.scripts]
 aurotek-sobel-edge = "sobel_edge_main:main"
 sobel-edge-tune = "sobel_tuning_ui_main:main"
+sobel-fine-tune = "sobel_fine_tune_gui:main"
 sobel-yolo-realtime = "realtime_predict_ui:main"
 
 [tool.setuptools]
 py-modules = [
+    "app_paths",
     "command_line_interface",
     "dark_background_mask",
     "image_file_discovery",

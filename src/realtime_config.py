@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
+from app_paths import (
+    APP_ICON,
+    DEFAULT_CSV_DIR,
+    DEFAULT_IMAGE_DIR,
+    DEFAULT_MODEL,
+    DEFAULT_REALTIME_OUTPUT_DIR,
+    PROJECT_ROOT,
+)
 
-def application_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
 
-
-PROJECT_ROOT = application_root()
-DEFAULT_IMAGE_DIR = PROJECT_ROOT / "SepData" / "Picture"
-DEFAULT_CSV_DIR = PROJECT_ROOT / "SepData" / "Product_Info"
-DEFAULT_MODEL = PROJECT_ROOT / "Yolo_train" / "runs" / "sobel_yolo" / "weights" / "best.pt"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "Output_files" / "Sobel_Image_OBB"
-APP_ICON = PROJECT_ROOT / "assets" / "edge_detection_monitor.ico"
+DEFAULT_OUTPUT_DIR = DEFAULT_REALTIME_OUTPUT_DIR
 
 IMAGE_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 PASS_CLASSES = {"In spec"}

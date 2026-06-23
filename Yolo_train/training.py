@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
+import yaml
 from ultralytics import YOLO
 
 
-YOLO_DIR = Path(__file__).resolve().parent
+def _find_project_root(start: Path) -> Path:
+    for candidate in (start, *start.parents):
+        if (candidate / "Yolo_train" / "data.yaml").exists():
+            return candidate
+    return start
+
+
+def project_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return _find_project_root(Path(sys.executable).resolve().parent)
+    return _find_project_root(Path(__file__).resolve().parent.parent)
+
+
+PROJECT_ROOT = project_root()
+YOLO_DIR = PROJECT_ROOT / "Yolo_train"
 DEFAULT_DATA = YOLO_DIR / "data.yaml"
 DEFAULT_PROJECT = YOLO_DIR / "runs"
+RUNTIME_DATA = YOLO_DIR / "data.runtime.yaml"
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,9 +96,10 @@ def main() -> int:
     if not args.data.exists():
         raise FileNotFoundError(f"Dataset YAML not found: {args.data}")
 
+    data_path = _runtime_dataset_yaml(args.data)
     model = YOLO(args.model)
     train_args = {
-        "data": str(args.data),
+        "data": str(data_path),
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
@@ -98,6 +116,16 @@ def main() -> int:
     print(f"Training complete: {save_dir}")
     print(f"Best model: {save_dir / 'weights' / 'best.pt'}")
     return 0
+
+
+def _runtime_dataset_yaml(data_path: Path) -> Path:
+    if data_path.resolve() != DEFAULT_DATA.resolve():
+        return data_path
+
+    data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
+    data["path"] = str(YOLO_DIR)
+    RUNTIME_DATA.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return RUNTIME_DATA
 
 
 if __name__ == "__main__":

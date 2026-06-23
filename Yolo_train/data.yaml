@@ -1,4 +1,4 @@
-path: E:/AIProject/Sobel-Edge-Detection-rev2/Sobel-Edge-Detection-rev2/Yolo_train
+path: Yolo_train
 train: images
 val: images
 

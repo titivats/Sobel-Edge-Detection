@@ -52,6 +52,7 @@ class RealtimePredictUi:
         self.latest_images: list[ImageTk.PhotoImage] = []
         self.running = True
         self.predictor_lock = threading.Lock()
+        self.predictor: RealtimePredictor | None = None
 
         self.status_var = tk.StringVar(value="Starting...")
         self.count_var = tk.StringVar(value="PASS 0   NG 0   UNKNOWN 0")
@@ -66,7 +67,6 @@ class RealtimePredictUi:
         self.build_tabs()
         self.build_result_tab()
         self.build_config_tab()
-        self.create_predictor()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def configure_style(self) -> None:
@@ -231,8 +231,8 @@ class RealtimePredictUi:
             background=PANEL,
         ).pack(fill="x", padx=(148, 0), pady=(0, 4))
 
-    def create_predictor(self) -> None:
-        self.predictor = RealtimePredictor(
+    def create_predictor(self) -> RealtimePredictor:
+        return RealtimePredictor(
             image_dir=self.args.image_dir,
             csv_dir=self.args.csv_dir,
             model_path=self.args.model,
@@ -265,6 +265,13 @@ class RealtimePredictUi:
             return
         output_dir.mkdir(parents=True, exist_ok=True)
         with self.predictor_lock:
+            if self.predictor is None:
+                self.args.image_dir = image_dir
+                self.args.csv_dir = csv_dir
+                self.args.output_dir = output_dir
+                self.status_var.set("Config saved. Model is still loading...")
+                self.notebook.select(self.result_tab)
+                return
             self.predictor.update_paths(image_dir=image_dir, csv_dir=csv_dir, output_dir=output_dir)
         self.clear_predictions()
         self.status_var.set(f"Config applied. Watching: {image_dir}")
@@ -297,13 +304,31 @@ class RealtimePredictUi:
         self.root.destroy()
 
     def worker_loop(self) -> None:
+        try:
+            self.queue.put(RuntimeStatus("Loading YOLO model..."))
+            predictor = self.create_predictor()
+            with self.predictor_lock:
+                self.predictor = predictor
+            self.queue.put(RuntimeStatus(f"Watching: {self.args.image_dir}"))
+        except Exception as exc:  # noqa: BLE001 - surface startup errors in the UI.
+            self.queue.put(exc)
+            self.running = False
+            return
+
         while self.running:
             try:
                 processed_count = 0
                 with self.predictor_lock:
-                    for view in self.predictor.scan_iter():
-                        processed_count += 1
-                        self.queue.put(view)
+                    predictor = self.predictor
+                    if predictor is None:
+                        self.queue.put(RuntimeStatus("Waiting for YOLO model..."))
+                    else:
+                        for view in predictor.scan_iter():
+                            processed_count += 1
+                            self.queue.put(view)
+                if predictor is None:
+                    threading.Event().wait(max(float(self.args.poll_seconds), 0.5))
+                    continue
                 if processed_count:
                     self.queue.put(RuntimeStatus(f"Processed {processed_count} new image(s)"))
             except Exception as exc:  # noqa: BLE001 - surface runtime errors in the UI.

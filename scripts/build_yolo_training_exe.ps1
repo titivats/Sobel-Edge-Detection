@@ -1,14 +1,13 @@
 param(
-    [string] $ExeName = "Sobel_YOLO_Fine_Tune",
+    [string] $ExeName = "Sobel_YOLO_Train",
     [ValidateSet("onedir", "onefile")]
-    [string] $Mode = "onedir",
-    [switch] $Console
+    [string] $Mode = "onedir"
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
-$EntryPoint = Join-Path $ProjectRoot "sobel_tuning_ui.py"
+$EntryPoint = Join-Path $ProjectRoot "Yolo_train\training.py"
 $BuildDir = Join-Path $ProjectRoot "build"
 $DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "dist" } else { $ProjectRoot }
 $IconPath = Join-Path $ProjectRoot "assets\edge_detection_monitor.ico"
@@ -18,19 +17,18 @@ if (-not (Test-Path -LiteralPath $Python)) {
 }
 
 if (-not (Test-Path -LiteralPath $EntryPoint)) {
-    throw "Tuning UI entry point not found: $EntryPoint"
+    throw "YOLO training entry point not found: $EntryPoint"
 }
 
 Push-Location $ProjectRoot
 try {
-    $WindowModeArgs = if ($Console) { @("--console") } else { @("--windowed") }
     $BuildModeArgs = if ($Mode -eq "onedir") { @("--onedir") } else { @("--onefile") }
     $PyInstallerArgs = @(
         "-m",
         "PyInstaller",
         "--noconfirm",
         "--clean"
-    ) + $WindowModeArgs + $BuildModeArgs + @(
+    ) + $BuildModeArgs + @(
         "--name",
         $ExeName,
         "--icon",
@@ -41,6 +39,12 @@ try {
         $DistDir,
         "--workpath",
         $BuildDir,
+        "--collect-all",
+        "ultralytics",
+        "--collect-all",
+        "torch",
+        "--collect-all",
+        "torchvision",
         $EntryPoint
     )
     & $Python @PyInstallerArgs

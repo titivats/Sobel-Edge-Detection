@@ -16,5 +16,6 @@ SepData/
 *.log
 
 build/
+dist/
 *.spec
 *.exe
