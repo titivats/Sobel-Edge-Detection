@@ -1,0 +1,3 @@
+﻿SN,ID,Barcode,ProductId,CutedTable,Recipe_Name,Result,OffsetX,OffsetY,RotateAngle,Start_time,Tact_time,OperatorID,Length,Width,ConveyorSpeed,CuttingTime,Message,MachineID,SubBoardCount,End_time,FixtureBarcode
+32054,096025e2-5ed6-4392-adc0-9e75b07ddeea,,160914002C01,RightTable,160914002C01.rcp,True,-0.001036299,0.01062024,-0.007007774,2026/06/20 15:56:03,104,ME,320.4275,319.6375,0,101,,22SAA0009,4,2026/06/20 15:57:47,
+,096025e2-5ed6-4392-adc0-9e75b07ddeea,,160914002C01,RightTable,160914002C01.rcp,True,0,0,0,2026-06-20 15:56:11,95,ME,141.6148,272.7271,0,95,,22SAA0009,0,2026-06-20 15:57:46,

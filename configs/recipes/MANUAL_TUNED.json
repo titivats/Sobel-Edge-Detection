@@ -1,0 +1,24 @@
+{
+  "recipe_name": "MANUAL_TUNED",
+  "program_name": "MANUAL_TUNED",
+  "created_at": "2026-06-23 09:15:18",
+  "updated_at": "2026-06-23 09:15:18",
+  "source": "sobel_tuning_ui",
+  "sample_image": "E:\\AI_Project\\project_fbn\\Sobel-Edge-Detection-rev-20260525-inner-outer-cut\\Sobel-Edge-Detection-codex-sobel-yolo-workflow\\Input_files\\Picture\\20260619_083018.bmp",
+  "detection": {
+    "black_threshold": 55,
+    "sobel_threshold_ratio": 0.06823770491803278,
+    "edge_close_kernel": 1,
+    "edge_close_iterations": 0,
+    "edge_dilate_iterations": 0,
+    "display_edge_thickness": 1,
+    "edge_view_mode": 3,
+    "edge_view": "all"
+  },
+  "inspection_zone": {
+    "x_min_ratio": 0.0,
+    "x_max_ratio": 1.0,
+    "y_min_ratio": 0.0,
+    "y_max_ratio": 1.0
+  }
+}

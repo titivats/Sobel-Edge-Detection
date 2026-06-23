@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aurotek-edge-detection"
+version = "0.1.0"
+description = "Sobel edge detection for Aurotek Router camera images."
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=4.9",
+    "numpy>=1.24"
+]
+
+[project.scripts]
+aurotek-sobel-edge = "sobel_edge_main:main"
+sobel-edge-tune = "sobel_tuning_ui_main:main"
+sobel-yolo-realtime = "realtime_predict_ui:main"
+
+[tool.setuptools]
+py-modules = [
+    "command_line_interface",
+    "dark_background_mask",
+    "image_file_discovery",
+    "inspection_zone",
+    "realtime_app",
+    "realtime_config",
+    "realtime_overlay",
+    "realtime_predict_ui",
+    "realtime_predictor",
+    "realtime_product_info",
+    "sobel_edge_main",
+    "sobel_edge_output",
+    "sobel_edge_detection",
+    "sobel_fine_tune_gui",
+    "sobel_tuning_ui_main",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"

@@ -1,0 +1,10 @@
+path: E:/AIProject/Sobel-Edge-Detection-rev2/Sobel-Edge-Detection-rev2/Yolo_train
+train: images
+val: images
+
+names:
+  0: Benign
+  1: In spec
+  2: Malignant
+  3: Normal
+  4: Out spec

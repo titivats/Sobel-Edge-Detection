@@ -1,0 +1,2 @@
+﻿SN,ID,Barcode,ProductId,CutedTable,Recipe_Name,Result,OffsetX,OffsetY,RotateAngle,Start_time,Tact_time,OperatorID,Length,Width,ConveyorSpeed,CuttingTime,Message,MachineID,SubBoardCount,End_time,FixtureBarcode
+32164,808f2769-1efc-401c-a1b1-09330c061c86,,160914002C01,RightTable,160914002C01.rcp,False,0,0,0,2026/06/22 03:02:27,-1,Admin,320.4275,319.6375,0,-1,[Alarm occur][Cut] Base Align Fail,22SAA0009,4,0001/01/01 00:00:00,
