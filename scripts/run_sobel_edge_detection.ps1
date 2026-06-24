@@ -8,10 +8,16 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
-$Runner = Join-Path $ProjectRoot "sobel_edge_detect.py"
+$Runner = Join-Path $ProjectRoot "src\batch_entry.py"
 
 if ([string]::IsNullOrWhiteSpace($InputPath)) {
-    $InputPath = Join-Path $ProjectRoot "SepData\Picture"
+    $SepDataPath = Join-Path $ProjectRoot "SepData\Picture"
+    $InputPath = if (Test-Path -LiteralPath $SepDataPath) {
+        $SepDataPath
+    }
+    else {
+        Join-Path $ProjectRoot "Input_files\Picture"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {

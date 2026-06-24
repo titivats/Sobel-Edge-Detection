@@ -8,10 +8,10 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
-$EntryPoint = Join-Path $ProjectRoot "sobel_tuning_ui.py"
+$EntryPoint = Join-Path $ProjectRoot "src\fine_tune_entry.py"
 $BuildDir = Join-Path $ProjectRoot "build"
-$DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "dist" } else { $ProjectRoot }
-$IconPath = Join-Path $ProjectRoot "assets\edge_detection_monitor.ico"
+$DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "apps" } else { $ProjectRoot }
+$IconPath = Join-Path $ProjectRoot "assets\sobel_fine_tune_icon.ico"
 
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python venv not found: $Python"

@@ -1,184 +1,70 @@
-# Aurotek Router Sobel Edge Detection
+# Sobel Edge Detection
 
-Sobel edge detection project for Aurotek Router camera images. The production
-runner now creates Sobel edge images only. Intrusion analysis, CSV result
-logging, millimeter calibration, cut classification, and inspection specs are
-not part of the active workflow.
+Production workflow for Sobel image tuning, YOLO training, and real-time
+inspection.
 
-## Quick Run
+## Operator Start
 
-Create Sobel edge images from the default image folder:
-
-```powershell
-.\venv\Scripts\python.exe .\sobel_edge_detect.py
-```
-
-Or use the helper script:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_sobel_edge_detection.ps1
-```
-
-Use a specific input file or folder:
-
-```powershell
-.\venv\Scripts\python.exe .\sobel_edge_detect.py `
-  --input .\SepData\Picture `
-  --output .\Output_files
-```
-
-Tune Sobel output:
-
-```powershell
-.\venv\Scripts\python.exe .\sobel_edge_detect.py `
-  --sobel-threshold-ratio 0.12 `
-  --edge-close-kernel 3 `
-  --edge-close-iterations 1 `
-  --edge-dilate-iterations 0 `
-  --display-edge-thickness 1 `
-  --edge-view all
-```
-
-Open the Sobel Fine Tune UI. This window compares `Original Image` with
-`Sobel Edge Detection` and lets you tune the black/white edge output:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_sobel_tuning_ui.ps1
-```
-
-Build the Sobel Fine Tune executable:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_sobel_tuning_exe.ps1
-```
-
-Run the generated Sobel tuning UI:
-
-```powershell
-.\dist\Sobel_YOLO_Fine_Tune\Sobel_YOLO_Fine_Tune.exe
-```
-
-## Outputs
-
-Outputs are written to a daily folder inside `Output_files\`.
-For example, a run on 22-Jun-2026 writes to:
+Run the numbered files from the project root:
 
 ```text
-Output_files\22-Jun-2026\sobel_edges\*_sobel_edge.png
+1_FINE_TUNE.bat
+2_TRAIN_YOLO.bat
+3_CHECK_TRAINING.bat
+4_REALTIME_MONITOR.bat
 ```
 
-No inspection CSV files are created by the active runner.
+## Fine Tune
+
+`1_FINE_TUNE.bat` opens the Sobel tuning application. Saved images are written
+under `Output_files\tuning_saved`, while recipes are written to `settings`.
 
 ## YOLO Training
 
-YOLO-format training data is stored in `Yolo_train\`:
+1. Put images in `yolo\images`.
+2. Put matching YOLO labels in `yolo\labels`.
+3. Edit `yolo\setting.txt`.
+4. Run `3_CHECK_TRAINING.bat`.
+5. Run `2_TRAIN_YOLO.bat`.
+
+Training results are written to:
 
 ```text
-Yolo_train\
-  data.yaml
-  classes.txt
-  images\
-  labels\
+yolo\runs\<run_name>\weights\best.pt
 ```
 
-Train a YOLO detection model:
+The checked GTX 1060 3GB baseline is:
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\train_yolo.ps1 `
-  -Epochs 50 `
-  -ImageSize 640 `
-  -Batch 4 `
-  -Workers 0
+```ini
+image_size = 320
+batch = 1
+workers = 0
+device = 0
 ```
 
-The trained weights are written under:
+## Real-Time Monitor
+
+`4_REALTIME_MONITOR.bat` opens the real-time Sobel and YOLO monitor.
+
+Default paths:
 
 ```text
-Yolo_train\runs\sobel_yolo\weights\best.pt
+Images: Input_files\Picture
+CSV: Input_files\Product Info
+Model: best.pt
+Output: Output_files\Sobel_Image_OBB
 ```
 
-Build the YOLO training executable:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_yolo_training_exe.ps1
-```
-
-Run the generated YOLO training executable:
-
-```powershell
-.\dist\Sobel_YOLO_Train\Sobel_YOLO_Train.exe --epochs 50 --imgsz 640 --batch 4 --workers 0
-```
-
-Run prediction with a trained model:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_yolo_predict.ps1 `
-  -Model .\Yolo_train\runs\sobel_yolo\weights\best.pt `
-  -Source .\Output_files `
-  -Confidence 0.25
-```
-
-## Real-Time Result UI
-
-Open a real-time preview window that watches router images, matches each image
-to the latest `_YYYYMMDD_HHMMSS.csv` file in `SepData\Product_Info`, runs YOLO
-on the Sobel edge view, and saves annotated bounding-box images:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_realtime_predict_ui.ps1
-```
-
-Defaults:
+## Project Layout
 
 ```text
-Images:  SepData\Picture
-CSV:     SepData\Product_Info
-Model:   Yolo_train\runs\sobel_yolo\weights\best.pt
-Output:  Output_files\Sobel_Image_OBB
-```
-
-Build the real-time UI executable:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_realtime_predict_exe.ps1
-```
-
-Run the generated executable:
-
-```powershell
-.\dist\Realtime_Sobel_YOLO\Realtime_Sobel_YOLO.exe
-```
-
-## File Layout
-
-```text
-configs/                         Recipe templates and tuned Sobel defaults.
-scripts/                         Operator/developer helper scripts.
-src/                             Production Python modules.
-Function_test/                   Function tests.
-SepData/Picture/                 Default image input folder.
-Output_files/                    Runtime Sobel edge output.
-sobel_edge_detect.py             Production Sobel-only wrapper.
-```
-
-## Active Modules
-
-- `command_line_interface.py`: command-line parsing and Sobel-only orchestration.
-- `image_file_discovery.py`: supported image lookup from file/folder input.
-- `sobel_edge_detection.py`: Sobel X, Y, and combined edge masks.
-- `sobel_edge_output.py`: saves Sobel edge images.
-- `sobel_tuning_ui_main.py`: manual tuning UI.
-- `sobel_fine_tune_gui.py`: Fine Tune GUI.
-- `realtime_predict_ui.py`: executable entry point for Edge Detection Monitor.
-- `realtime_app.py`: Tkinter UI layout, tabs, result cards, and queue handling.
-- `realtime_predictor.py`: image scanning, YOLO prediction, and output writing.
-- `realtime_product_info.py`: CSV timestamp matching, ProductInfo parsing, and caches.
-- `realtime_overlay.py`: Sobel conversion, PASS/NG status, and image annotations.
-- `realtime_config.py`: default paths, colors, app icon, and CLI arguments.
-- `app_paths.py`: shared project-root and runtime path resolution for source and exe runs.
-
-## Dependencies
-
-```powershell
-pip install -r requirements.txt
+apps\          Packaged Windows applications
+assets\        Application icons
+Input_files\   Runtime images and Product Info CSV files
+Output_files\  Generated images and logs
+settings\      Sobel recipes
+yolo\          Training dataset, settings, and runs
+src\           Production source code
+tests\         Automated tests
+scripts\       Build and maintenance scripts
 ```

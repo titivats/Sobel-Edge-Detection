@@ -12,7 +12,6 @@ from image_file_discovery import find_images
 from sobel_edge_output import save_sobel_edge_image
 from sobel_edge_detection import create_sobel_edge_masks, thicken_edge_for_display
 
-
 DEFAULT_INPUT_PATH = DEFAULT_IMAGE_DIR
 DEFAULT_OUTPUT_PATH = DEFAULT_SOBEL_OUTPUT_DIR
 

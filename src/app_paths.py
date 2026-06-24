@@ -3,12 +3,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
-PROJECT_MARKERS = ("src", "configs", "assets")
+PROJECT_MARKERS = ("assets", "settings")
 
 
 def find_project_root(start: Path | None = None) -> Path:
     base = (start or _runtime_start()).resolve()
+    if base.is_file():
+        base = base.parent
     for candidate in (base, *base.parents):
         if all((candidate / marker).exists() for marker in PROJECT_MARKERS):
             return candidate
@@ -24,17 +25,28 @@ def _runtime_start() -> Path:
 PROJECT_ROOT = find_project_root()
 
 ASSETS_DIR = PROJECT_ROOT / "assets"
-CONFIG_DIR = PROJECT_ROOT / "configs"
-DIST_DIR = PROJECT_ROOT / "dist"
+SETTINGS_DIR = PROJECT_ROOT / "settings"
 OUTPUT_DIR = PROJECT_ROOT / "Output_files"
 SEP_DATA_DIR = PROJECT_ROOT / "SepData"
-YOLO_DIR = PROJECT_ROOT / "Yolo_train"
+INPUT_FILES_DIR = PROJECT_ROOT / "Input_files"
 
-DEFAULT_IMAGE_DIR = SEP_DATA_DIR / "Picture"
-DEFAULT_CSV_DIR = SEP_DATA_DIR / "Product_Info"
-DEFAULT_MODEL = YOLO_DIR / "runs" / "sobel_yolo" / "weights" / "best.pt"
-DEFAULT_RECIPE_DIR = CONFIG_DIR / "recipes"
+
+def _preferred_path(primary: Path, fallback: Path) -> Path:
+    return primary if primary.exists() else fallback
+
+
+DEFAULT_IMAGE_DIR = _preferred_path(
+    SEP_DATA_DIR / "Picture",
+    INPUT_FILES_DIR / "Picture",
+)
+DEFAULT_CSV_DIR = _preferred_path(
+    SEP_DATA_DIR / "Product_Info",
+    INPUT_FILES_DIR / "Product Info",
+)
+DEFAULT_MODEL = PROJECT_ROOT / "best.pt"
+DEFAULT_RECIPE_DIR = SETTINGS_DIR
 DEFAULT_SOBEL_OUTPUT_DIR = OUTPUT_DIR
 DEFAULT_TUNING_OUTPUT_DIR = OUTPUT_DIR / "tuning_saved"
 DEFAULT_REALTIME_OUTPUT_DIR = OUTPUT_DIR / "Sobel_Image_OBB"
 APP_ICON = ASSETS_DIR / "edge_detection_monitor.ico"
+SOBEL_FINE_TUNE_ICON = ASSETS_DIR / "sobel_fine_tune_icon.ico"

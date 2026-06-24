@@ -10,22 +10,26 @@ requires-python = ">=3.10"
 dependencies = [
     "opencv-python>=4.9",
     "numpy>=1.24",
-    "PyYAML>=6.0"
+    "lap>=0.5.12",
+    "Pillow>=10.0",
+    "PyYAML>=6.0",
+    "ultralytics>=8.3"
 ]
 
 [project.scripts]
 aurotek-sobel-edge = "sobel_edge_main:main"
-sobel-edge-tune = "sobel_tuning_ui_main:main"
 sobel-fine-tune = "sobel_fine_tune_gui:main"
 sobel-yolo-realtime = "realtime_predict_ui:main"
 
 [tool.setuptools]
 py-modules = [
     "app_paths",
+    "app_preferences",
     "command_line_interface",
-    "dark_background_mask",
+    "edge_view",
+    "file_io",
     "image_file_discovery",
-    "inspection_zone",
+    "recipe_store",
     "realtime_app",
     "realtime_config",
     "realtime_overlay",
@@ -36,8 +40,16 @@ py-modules = [
     "sobel_edge_output",
     "sobel_edge_detection",
     "sobel_fine_tune_gui",
-    "sobel_tuning_ui_main",
+    "yolo_training",
 ]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]

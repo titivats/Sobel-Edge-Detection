@@ -74,7 +74,9 @@ def read_product_info(csv_path: Path | None) -> ProductInfo:
     with csv_path.open(newline="", encoding="utf-8-sig") as csv_file:
         rows = list(csv.DictReader(csv_file))
     first_row = next((row for row in rows if any(row.values())), {})
-    return ProductInfo(csv_path=csv_path, values={key: value or "" for key, value in first_row.items()})
+    return ProductInfo(
+        csv_path=csv_path, values={key: value or "" for key, value in first_row.items()}
+    )
 
 
 class CsvPointCounter:
@@ -93,7 +95,7 @@ class ProductCsvIndex:
 
     def __init__(self, csv_dir: Path) -> None:
         self.csv_dir = csv_dir
-        self.signature: tuple[int, int] | None = None
+        self.signature: tuple[tuple[str, int, int], ...] | None = None
         self.entries: list[tuple[datetime, Path]] = []
         self.timestamps: list[datetime] = []
 
@@ -126,13 +128,14 @@ class ProductCsvIndex:
             return
 
         csv_paths = list(self.csv_dir.glob("_*.csv"))
-        latest_mtime = 0
+        signature_items = []
         for csv_path in csv_paths:
             try:
-                latest_mtime = max(latest_mtime, csv_path.stat().st_mtime_ns)
+                stat = csv_path.stat()
+                signature_items.append((csv_path.name, stat.st_mtime_ns, stat.st_size))
             except OSError:
                 continue
-        signature = (len(csv_paths), latest_mtime)
+        signature = tuple(sorted(signature_items))
         if signature == self.signature:
             return
 

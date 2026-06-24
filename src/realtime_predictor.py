@@ -8,9 +8,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from file_io import atomic_write_image
 from realtime_config import IMAGE_EXTENSIONS
 from realtime_overlay import BoxResult, draw_overlay, make_sobel_bgr, status_from_classes
-from realtime_product_info import CsvPointCounter, ProductCsvIndex, ProductInfo, ProductInfoCache, timestamp_from_name
+from realtime_product_info import (
+    CsvPointCounter,
+    ProductCsvIndex,
+    ProductInfo,
+    ProductInfoCache,
+    timestamp_from_name,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,13 @@ class RealtimePredictor:
         sobel_threshold_ratio: float,
     ) -> None:
         from ultralytics import YOLO
+
+        if not model_path.is_file():
+            raise FileNotFoundError(f"YOLO model not found: {model_path}")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("Confidence must be between 0 and 1")
+        if sobel_threshold_ratio <= 0:
+            raise ValueError("Sobel threshold ratio must be greater than 0")
 
         self.image_dir = image_dir
         self.csv_dir = csv_dir
@@ -73,7 +87,9 @@ class RealtimePredictor:
             if self.processed.get(image_path) == modified:
                 continue
             changed.append((image_path, modified))
-        return sorted(changed, key=lambda item: (timestamp_from_name(item[0]) or datetime.min, item[0].name))
+        return sorted(
+            changed, key=lambda item: (timestamp_from_name(item[0]) or datetime.min, item[0].name)
+        )
 
     def iter_image_candidates(self):
         if self.image_dir.is_file():
@@ -128,8 +144,10 @@ class RealtimePredictor:
         status = status_from_classes(class_names)
         annotated = draw_overlay(sobel_bgr, boxes, status, point_number, product_info)
         csv_stem = product_info.csv_path.stem if product_info.csv_path else "no_csv"
-        output_path = self.output_dir / f"{csv_stem}_point{point_number:03d}_{image_path.stem}_predicted.png"
-        cv2.imwrite(str(output_path), annotated)
+        output_path = (
+            self.output_dir / f"{csv_stem}_point{point_number:03d}_{image_path.stem}_predicted.png"
+        )
+        atomic_write_image(output_path, annotated)
         return PredictionView(
             image_path=image_path,
             output_path=output_path,

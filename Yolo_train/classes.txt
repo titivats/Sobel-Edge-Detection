@@ -1,5 +1,0 @@
-Benign
-In spec
-Malignant
-Normal
-Out spec

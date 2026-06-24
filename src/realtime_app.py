@@ -11,12 +11,16 @@ import tkinter as tk
 from PIL import Image, ImageTk
 from tkinter import filedialog, ttk
 
-from realtime_config import (
-    ACCENT,
+from app_paths import (
     APP_ICON,
-    BG,
     DEFAULT_CSV_DIR,
     DEFAULT_IMAGE_DIR,
+    PROJECT_ROOT,
+)
+from app_preferences import RealtimePreferences, save_realtime_preferences
+from realtime_config import (
+    ACCENT,
+    BG,
     DEFAULT_OUTPUT_DIR,
     MUTED,
     NG_COLOR,
@@ -24,11 +28,15 @@ from realtime_config import (
     PANEL_2,
     PANEL_3,
     PASS_COLOR,
-    PROJECT_ROOT,
     TEXT,
     UNKNOWN_COLOR,
 )
 from realtime_predictor import PredictionView, RealtimePredictor
+
+MAX_RESULT_CARDS = 60
+QUEUE_CAPACITY = 200
+RESULT_CARD_WIDTH = 600
+RESULT_CARD_GAP = 28
 
 
 @dataclass(frozen=True)
@@ -48,11 +56,16 @@ class RealtimePredictUi:
         self.root.configure(background=BG)
         if APP_ICON.exists():
             self.root.iconbitmap(str(APP_ICON))
-        self.queue: queue.Queue[PredictionView | RuntimeStatus | Exception] = queue.Queue()
-        self.latest_images: list[ImageTk.PhotoImage] = []
+        self.queue: queue.Queue[PredictionView | RuntimeStatus | Exception] = queue.Queue(
+            maxsize=QUEUE_CAPACITY
+        )
+        self.result_cards: list[tuple[tk.Frame, ImageTk.PhotoImage]] = []
+        self.result_columns = 3
         self.running = True
+        self.stop_event = threading.Event()
         self.predictor_lock = threading.Lock()
         self.predictor: RealtimePredictor | None = None
+        self.pending_config: tuple[Path, Path, Path] | None = None
 
         self.status_var = tk.StringVar(value="Starting...")
         self.count_var = tk.StringVar(value="PASS 0   NG 0   UNKNOWN 0")
@@ -101,7 +114,10 @@ class RealtimePredictUi:
         self.canvas = tk.Canvas(self.result_tab, background=BG, highlightthickness=0)
         self.scrollbar = tk.Scrollbar(self.result_tab, orient="vertical", command=self.canvas.yview)
         self.content = tk.Frame(self.canvas, background=BG)
-        self.content.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.content.bind(
+            "<Configure>",
+            lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
         self.canvas_window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.bind("<Configure>", self.resize_content)
@@ -155,9 +171,21 @@ class RealtimePredictUi:
             background=PANEL,
         ).pack(fill="x", pady=(0, 20))
 
-        self.add_path_row(panel, "Input Image", self.image_dir_var, "Sobel edge detection image folder")
-        self.add_path_row(panel, ".CSV", self.csv_dir_var, "Product_Info CSV folder used to match image timestamp and naming")
-        self.add_path_row(panel, "Output", self.output_dir_var, "Folder for predicted images shown and saved by the UI")
+        self.add_path_row(
+            panel, "Input Image", self.image_dir_var, "Sobel edge detection image folder"
+        )
+        self.add_path_row(
+            panel,
+            ".CSV",
+            self.csv_dir_var,
+            "Product_Info CSV folder used to match image timestamp and naming",
+        )
+        self.add_path_row(
+            panel,
+            "Output",
+            self.output_dir_var,
+            "Folder for predicted images shown and saved by the UI",
+        )
 
         button_row = tk.Frame(panel, background=PANEL)
         button_row.pack(fill="x", pady=(18, 0))
@@ -188,7 +216,9 @@ class RealtimePredictUi:
             pady=8,
         ).pack(side="left", padx=(10, 0))
 
-    def add_path_row(self, parent: tk.Widget, label: str, variable: tk.StringVar, help_text: str) -> None:
+    def add_path_row(
+        self, parent: tk.Widget, label: str, variable: tk.StringVar, help_text: str
+    ) -> None:
         row = tk.Frame(parent, background=PANEL)
         row.pack(fill="x", pady=10)
         tk.Label(
@@ -263,24 +293,36 @@ class RealtimePredictUi:
             self.status_var.set(f"Error: CSV path not found: {csv_dir}")
             self.notebook.select(self.result_tab)
             return
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.status_var.set(f"Error: Could not create output folder: {exc}")
+            self.notebook.select(self.result_tab)
+            return
         with self.predictor_lock:
-            if self.predictor is None:
-                self.args.image_dir = image_dir
-                self.args.csv_dir = csv_dir
-                self.args.output_dir = output_dir
-                self.status_var.set("Config saved. Model is still loading...")
-                self.notebook.select(self.result_tab)
-                return
-            self.predictor.update_paths(image_dir=image_dir, csv_dir=csv_dir, output_dir=output_dir)
+            self.args.image_dir = image_dir
+            self.args.csv_dir = csv_dir
+            self.args.output_dir = output_dir
+            self.pending_config = (image_dir, csv_dir, output_dir)
+        try:
+            save_realtime_preferences(
+                RealtimePreferences(
+                    image_dir=image_dir,
+                    csv_dir=csv_dir,
+                    output_dir=output_dir,
+                )
+            )
+        except OSError as exc:
+            self.status_var.set(f"Config applied but could not be saved: {exc}")
         self.clear_predictions()
-        self.status_var.set(f"Config applied. Watching: {image_dir}")
+        if not self.status_var.get().startswith("Config applied but"):
+            self.status_var.set(f"Config queued. Watching: {image_dir}")
         self.notebook.select(self.result_tab)
 
     def clear_predictions(self) -> None:
         for child in self.content.winfo_children():
             child.destroy()
-        self.latest_images.clear()
+        self.result_cards.clear()
         self.pass_count = 0
         self.ng_count = 0
         self.unknown_count = 0
@@ -290,6 +332,10 @@ class RealtimePredictUi:
 
     def resize_content(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self.canvas_window, width=event.width)
+        columns = max(1, event.width // (RESULT_CARD_WIDTH + RESULT_CARD_GAP))
+        if columns != self.result_columns:
+            self.result_columns = columns
+            self._layout_result_cards()
 
     def on_mousewheel(self, event: tk.Event) -> None:
         self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
@@ -301,39 +347,55 @@ class RealtimePredictUi:
 
     def close(self) -> None:
         self.running = False
+        self.stop_event.set()
         self.root.destroy()
 
     def worker_loop(self) -> None:
         try:
-            self.queue.put(RuntimeStatus("Loading YOLO model..."))
+            self._queue_item(RuntimeStatus("Loading YOLO model..."))
             predictor = self.create_predictor()
             with self.predictor_lock:
                 self.predictor = predictor
-            self.queue.put(RuntimeStatus(f"Watching: {self.args.image_dir}"))
+                pending_config = self.pending_config
+                self.pending_config = None
+            if pending_config is not None:
+                predictor.update_paths(*pending_config)
+            self._queue_item(RuntimeStatus(f"Watching: {predictor.image_dir}"))
         except Exception as exc:  # noqa: BLE001 - surface startup errors in the UI.
-            self.queue.put(exc)
+            self._queue_item(exc)
             self.running = False
             return
 
-        while self.running:
+        while not self.stop_event.is_set():
             try:
                 processed_count = 0
                 with self.predictor_lock:
                     predictor = self.predictor
-                    if predictor is None:
-                        self.queue.put(RuntimeStatus("Waiting for YOLO model..."))
-                    else:
-                        for view in predictor.scan_iter():
-                            processed_count += 1
-                            self.queue.put(view)
+                    pending_config = self.pending_config
+                    self.pending_config = None
                 if predictor is None:
-                    threading.Event().wait(max(float(self.args.poll_seconds), 0.5))
+                    self._queue_item(RuntimeStatus("Waiting for YOLO model..."))
+                    self.stop_event.wait(max(float(self.args.poll_seconds), 0.5))
                     continue
+                if pending_config is not None:
+                    predictor.update_paths(*pending_config)
+                    self._queue_item(RuntimeStatus(f"Watching: {predictor.image_dir}"))
+                for view in predictor.scan_iter():
+                    processed_count += 1
+                    self._queue_item(view)
                 if processed_count:
-                    self.queue.put(RuntimeStatus(f"Processed {processed_count} new image(s)"))
+                    self._queue_item(RuntimeStatus(f"Processed {processed_count} new image(s)"))
             except Exception as exc:  # noqa: BLE001 - surface runtime errors in the UI.
-                self.queue.put(exc)
-            threading.Event().wait(max(float(self.args.poll_seconds), 0.5))
+                self._queue_item(exc)
+            self.stop_event.wait(max(float(self.args.poll_seconds), 0.5))
+
+    def _queue_item(self, item: PredictionView | RuntimeStatus | Exception) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.queue.put(item, timeout=0.2)
+                return
+            except queue.Full:
+                continue
 
     def consume_queue(self) -> None:
         items_handled = 0
@@ -354,17 +416,25 @@ class RealtimePredictUi:
         image = Image.fromarray(rgb)
         image.thumbnail((560, 420))
         photo = ImageTk.PhotoImage(image)
-        self.latest_images.append(photo)
 
-        row = len(self.latest_images) - 1
-        card = tk.Frame(self.content, background=PANEL, padx=1, pady=1, width=600, height=520)
-        card.grid(row=row // 3, column=row % 3, padx=14, pady=14, sticky="n")
+        card = tk.Frame(
+            self.content,
+            background=PANEL,
+            padx=1,
+            pady=1,
+            width=RESULT_CARD_WIDTH,
+            height=520,
+        )
         card.grid_propagate(False)
         image_panel = tk.Frame(card, background="#0f172a", padx=8, pady=8)
         image_panel.pack(fill="x")
         tk.Label(image_panel, image=photo, background="#0f172a").pack()
         labels = ", ".join(view.class_names) if view.class_names else "No detection"
-        color = PASS_COLOR if view.status == "PASS" else NG_COLOR if view.status == "NG" else UNKNOWN_COLOR
+        color = (
+            PASS_COLOR
+            if view.status == "PASS"
+            else NG_COLOR if view.status == "NG" else UNKNOWN_COLOR
+        )
         info_panel = tk.Frame(card, background=PANEL, padx=10, pady=9)
         info_panel.pack(fill="both", expand=True)
         top_line = tk.Frame(info_panel, background=PANEL)
@@ -390,7 +460,7 @@ class RealtimePredictUi:
         detail = (
             f"{view.image_path.name}\n"
             f"{labels}\n"
-            f"SN: {view.product_info.sn or '-'} | CutedTable: {view.product_info.cuted_table or '-'}\n"
+            f"SN: {view.product_info.sn or '-'} | Table: {view.product_info.cuted_table or '-'}\n"
             f"Product: {view.product_info.product_id or '-'} | Recipe: {view.product_info.recipe_name or '-'}\n"
             f"{view.product_info.csv_path.name if view.product_info.csv_path else '-'}"
         )
@@ -404,11 +474,26 @@ class RealtimePredictUi:
             font=("Segoe UI", 10),
             wraplength=560,
         ).pack(fill="both", expand=True, pady=(8, 0))
+        self.result_cards.append((card, photo))
+        if len(self.result_cards) > MAX_RESULT_CARDS:
+            oldest_card, _oldest_photo = self.result_cards.pop(0)
+            oldest_card.destroy()
+        self._layout_result_cards()
         self.increment_count(view.status)
         self.status_var.set(
             f"Latest: {view.image_path.name} -> Point {view.point_number} {view.status}. "
             f"Saved: {view.output_path}"
         )
+
+    def _layout_result_cards(self) -> None:
+        for index, (card, _photo) in enumerate(self.result_cards):
+            card.grid(
+                row=index // self.result_columns,
+                column=index % self.result_columns,
+                padx=14,
+                pady=14,
+                sticky="n",
+            )
 
     def increment_count(self, status: str) -> None:
         if status == "PASS":
@@ -420,4 +505,6 @@ class RealtimePredictUi:
         self.update_counts()
 
     def update_counts(self) -> None:
-        self.count_var.set(f"PASS {self.pass_count}   NG {self.ng_count}   UNKNOWN {self.unknown_count}")
+        self.count_var.set(
+            f"PASS {self.pass_count}   NG {self.ng_count}   UNKNOWN {self.unknown_count}"
+        )

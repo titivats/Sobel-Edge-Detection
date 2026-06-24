@@ -1,0 +1,34 @@
+SOBEL + YOLO QUICK START
+========================
+
+1_FINE_TUNE.bat
+  Open Sobel Fine Tune.
+
+2_TRAIN_YOLO.bat
+  Start YOLO training using yolo\setting.txt.
+
+3_CHECK_TRAINING.bat
+  Check images, labels, classes, paths, and settings without training.
+
+4_REALTIME_MONITOR.bat
+  Open the real-time Sobel + YOLO monitor.
+
+Folders used by operators:
+
+Input_files\
+  Source camera images and Product Info CSV files.
+
+yolo\images\
+  YOLO training images.
+
+yolo\labels\
+  YOLO label files matching the image names.
+
+yolo\setting.txt
+  Training settings.
+
+yolo\runs\
+  Training results and weights.
+
+Output_files\
+  Sobel and real-time prediction outputs.

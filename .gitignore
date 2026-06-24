@@ -16,6 +16,11 @@ SepData/
 *.log
 
 build/
-dist/
+apps/
 *.spec
 *.exe
+
+yolo/runs/
+yolo/*.cache
+yolo26n.pt
+settings/realtime.json

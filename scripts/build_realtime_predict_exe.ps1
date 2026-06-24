@@ -10,7 +10,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
 $EntryPoint = Join-Path $ProjectRoot "src\realtime_predict_ui.py"
 $BuildDir = Join-Path $ProjectRoot "build"
-$DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "dist" } else { $ProjectRoot }
+$DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "apps" } else { $ProjectRoot }
 $IconPath = Join-Path $ProjectRoot "assets\edge_detection_monitor.ico"
 
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -43,10 +43,6 @@ try {
         $BuildDir,
         "--collect-all",
         "ultralytics",
-        "--collect-all",
-        "torch",
-        "--collect-all",
-        "torchvision",
         $EntryPoint
     )
     & $Python @PyInstallerArgs

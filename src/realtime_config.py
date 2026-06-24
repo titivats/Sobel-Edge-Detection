@@ -4,20 +4,16 @@ import argparse
 from pathlib import Path
 
 from app_paths import (
-    APP_ICON,
-    DEFAULT_CSV_DIR,
-    DEFAULT_IMAGE_DIR,
     DEFAULT_MODEL,
     DEFAULT_REALTIME_OUTPUT_DIR,
-    PROJECT_ROOT,
 )
-
+from app_preferences import load_realtime_preferences
 
 DEFAULT_OUTPUT_DIR = DEFAULT_REALTIME_OUTPUT_DIR
 
 IMAGE_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
-PASS_CLASSES = {"In spec"}
-NG_CLASSES = {"Out spec"}
+PASS_CLASSES = {"in spec", "pass"}
+NG_CLASSES = {"out spec", "ng"}
 
 BG = "#111827"
 PANEL = "#182235"
@@ -32,11 +28,12 @@ UNKNOWN_COLOR = "#f59e0b"
 
 
 def parse_args() -> argparse.Namespace:
+    preferences = load_realtime_preferences()
     parser = argparse.ArgumentParser(description="Real-time YOLO preview for Sobel images.")
-    parser.add_argument("--image-dir", type=Path, default=DEFAULT_IMAGE_DIR)
-    parser.add_argument("--csv-dir", type=Path, default=DEFAULT_CSV_DIR)
+    parser.add_argument("--image-dir", type=Path, default=preferences.image_dir)
+    parser.add_argument("--csv-dir", type=Path, default=preferences.csv_dir)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", type=Path, default=preferences.output_dir)
     parser.add_argument("--confidence", type=float, default=0.25)
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--sobel-threshold-ratio", type=float, default=0.12)
