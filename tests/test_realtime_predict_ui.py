@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from realtime_overlay import status_from_classes
 from realtime_product_info import (
     CsvPointCounter,
     ProductCsvIndex,
@@ -54,14 +53,6 @@ class RealtimePredictUiTest(unittest.TestCase):
         self.assertEqual(info.product_id, "160914002C01")
         self.assertEqual(info.recipe_name, "160914002C01.rcp")
         self.assertEqual(info.result, "True")
-
-    def test_status_from_classes(self) -> None:
-        self.assertEqual(status_from_classes(["In spec"]), "PASS")
-        self.assertEqual(status_from_classes(["In spec", "Out spec"]), "NG")
-        self.assertEqual(status_from_classes(["PASS"]), "PASS")
-        self.assertEqual(status_from_classes(["PASS", "NG"]), "NG")
-        self.assertEqual(status_from_classes(["unknown"]), "UNKNOWN")
-        self.assertEqual(status_from_classes([]), "UNKNOWN")
 
     def test_csv_point_counter_resets_per_csv_file(self) -> None:
         counter = CsvPointCounter()

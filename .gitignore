@@ -11,16 +11,20 @@ venv/
 outputs/
 outputs_intrusion/
 Output_files/
+Output_Sobel/
 SepData/
 
 *.log
 
 build/
 apps/
+finetune/
 *.spec
 *.exe
 
-yolo/runs/
-yolo/*.cache
-yolo26n.pt
+image_classification/dataset/
+image_classification/runs/
+image_classification/predict_images/
+image_classification/prediction_results/
+*-cls.pt
 settings/realtime.json

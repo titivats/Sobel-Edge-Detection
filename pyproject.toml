@@ -40,7 +40,6 @@ py-modules = [
     "sobel_edge_output",
     "sobel_edge_detection",
     "sobel_fine_tune_gui",
-    "yolo_training",
 ]
 
 [tool.setuptools.package-dir]

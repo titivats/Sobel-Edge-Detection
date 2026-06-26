@@ -43,10 +43,26 @@ DEFAULT_CSV_DIR = _preferred_path(
     SEP_DATA_DIR / "Product_Info",
     INPUT_FILES_DIR / "Product Info",
 )
-DEFAULT_MODEL = PROJECT_ROOT / "best.pt"
+DEFAULT_CLASSIFICATION_MODEL = (
+    PROJECT_ROOT
+    / "image_classification"
+    / "runs"
+    / "pass_ng_classifier"
+    / "weights"
+    / "best.pt"
+)
 DEFAULT_RECIPE_DIR = SETTINGS_DIR
 DEFAULT_SOBEL_OUTPUT_DIR = OUTPUT_DIR
-DEFAULT_TUNING_OUTPUT_DIR = OUTPUT_DIR / "tuning_saved"
-DEFAULT_REALTIME_OUTPUT_DIR = OUTPUT_DIR / "Sobel_Image_OBB"
+
+# Finetune.exe is distributed in <workspace>/finetune, while operators keep
+# source and output images in the workspace beside that package.
+FINE_TUNE_WORKSPACE_ROOT = (
+    PROJECT_ROOT.parent
+    if getattr(sys, "frozen", False) and PROJECT_ROOT.name.casefold() == "finetune"
+    else PROJECT_ROOT
+)
+DEFAULT_FINE_TUNE_IMAGE_DIR = FINE_TUNE_WORKSPACE_ROOT / "Input_files" / "Picture"
+DEFAULT_TUNING_OUTPUT_DIR = FINE_TUNE_WORKSPACE_ROOT / "Output_Sobel"
+DEFAULT_REALTIME_OUTPUT_DIR = OUTPUT_DIR / "Sobel_Final_Result"
 APP_ICON = ASSETS_DIR / "edge_detection_monitor.ico"
 SOBEL_FINE_TUNE_ICON = ASSETS_DIR / "sobel_fine_tune_icon.ico"

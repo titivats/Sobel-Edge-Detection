@@ -13,14 +13,14 @@ import cv2
 import numpy as np
 
 from app_paths import (
-    DEFAULT_IMAGE_DIR,
+    DEFAULT_FINE_TUNE_IMAGE_DIR,
     DEFAULT_RECIPE_DIR,
     DEFAULT_TUNING_OUTPUT_DIR,
     PROJECT_ROOT,
     SOBEL_FINE_TUNE_ICON,
 )
 from edge_view import select_edge
-from file_io import atomic_write_image, atomic_write_text
+from file_io import atomic_write_image, atomic_write_text, read_image
 from image_file_discovery import find_images
 from recipe_store import TuneSettings as RecipeTuneSettings
 from recipe_store import safe_recipe_name, save_recipe
@@ -117,7 +117,7 @@ class SobelFineTuneApp:
 
         self.program_name_var = tk.StringVar(value=args.program_name)
         startup_input = args.input
-        default_input = startup_input or DEFAULT_IMAGE_DIR
+        default_input = startup_input or DEFAULT_FINE_TUNE_IMAGE_DIR
         self.input_image_path_var = tk.StringVar(value=str(default_input))
         self.output_image_dir_var = tk.StringVar(value=str(args.output_image_dir))
         self.status_var = tk.StringVar(
@@ -451,9 +451,10 @@ class SobelFineTuneApp:
         image_path = self._current_path()
         if image_path is None:
             return
-        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-        if image is None:
-            messagebox.showerror("Image Error", f"Could not read image:\n{image_path}")
+        try:
+            image = read_image(image_path)
+        except OSError as exc:
+            messagebox.showerror("Image Error", str(exc))
             return
         self.current_image = image
         self._apply_settings(self.saved_settings.get(str(image_path), GuiTuneSettings()))

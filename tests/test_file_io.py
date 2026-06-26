@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from file_io import atomic_write_image, atomic_write_text
+from file_io import atomic_write_image, atomic_write_text, read_image
 
 
 class AtomicWriteTest(unittest.TestCase):
@@ -31,6 +31,17 @@ class AtomicWriteTest(unittest.TestCase):
             saved = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
             self.assertIsNotNone(saved)
             self.assertEqual(int(saved[0, 0]), 255)
+
+    def test_read_image_supports_bmp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "camera image.bmp"
+            expected = np.full((12, 16, 3), 127, dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(path), expected))
+
+            loaded = read_image(path)
+
+            self.assertEqual(loaded.shape, expected.shape)
+            self.assertTrue(np.array_equal(loaded, expected))
 
 
 if __name__ == "__main__":

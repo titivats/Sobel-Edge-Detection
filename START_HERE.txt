@@ -1,34 +1,20 @@
-SOBEL + YOLO QUICK START
-========================
+SOBEL + YOLO CLASSIFICATION QUICK START
+=======================================
 
-1_FINE_TUNE.bat
-  Open Sobel Fine Tune.
+Finetune.bat
+  Create and tune Sobel images.
 
-2_TRAIN_YOLO.bat
-  Start YOLO training using yolo\setting.txt.
+image_classification\Train_model.bat
+  Read the newest Label Studio JSON, prepare PASS/NG folders, and train.
 
-3_CHECK_TRAINING.bat
-  Check images, labels, classes, paths, and settings without training.
+image_classification\Predict_model.bat
+  Classify images placed in image_classification\predict_images.
 
-4_REALTIME_MONITOR.bat
-  Open the real-time Sobel + YOLO monitor.
+Realtime_Dashboard.bat
+  Open the realtime PASS/NG classification dashboard.
 
-Folders used by operators:
+Label Studio JSON folder:
+  image_classification\Export JSON from label-studio
 
-Input_files\
-  Source camera images and Product Info CSV files.
-
-yolo\images\
-  YOLO training images.
-
-yolo\labels\
-  YOLO label files matching the image names.
-
-yolo\setting.txt
-  Training settings.
-
-yolo\runs\
-  Training results and weights.
-
-Output_files\
-  Sobel and real-time prediction outputs.
+Trained model:
+  image_classification\runs\pass_ng_classifier\weights\best.pt

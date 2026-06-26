@@ -9,6 +9,19 @@ import cv2
 import numpy as np
 
 
+def read_image(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray:
+    """Read an image reliably, including BMP files and Windows Unicode paths."""
+    try:
+        encoded = np.fromfile(path, dtype=np.uint8)
+    except OSError as exc:
+        raise OSError(f"Could not open image: {path}") from exc
+
+    image = cv2.imdecode(encoded, flags)
+    if image is None:
+        raise OSError(f"Could not decode image: {path}")
+    return image
+
+
 def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

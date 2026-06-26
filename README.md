@@ -1,70 +1,32 @@
-# Sobel Edge Detection
+# Sobel Image Classification
 
-Production workflow for Sobel image tuning, YOLO training, and real-time
-inspection.
+Production workflow for Sobel fine-tuning, Label Studio classification,
+Ultralytics training, batch prediction, and realtime PASS/NG monitoring.
 
-## Operator Start
+## Operator workflow
 
-Run the numbered files from the project root:
+1. Run `Finetune.bat` to create Sobel images under `Output_Sobel`.
+2. Label those images as `PASS` or `NG` in Label Studio.
+3. Export JSON into:
 
-```text
-1_FINE_TUNE.bat
-2_TRAIN_YOLO.bat
-3_CHECK_TRAINING.bat
-4_REALTIME_MONITOR.bat
-```
+   `image_classification\Export JSON from label-studio`
 
-## Fine Tune
+4. Run `image_classification\Train_model.bat`.
+5. Run `image_classification\Predict_model.bat` for folder-based testing.
+6. Run `Realtime_Dashboard.bat` for the realtime dashboard.
 
-`1_FINE_TUNE.bat` opens the Sobel tuning application. Saved images are written
-under `Output_files\tuning_saved`, while recipes are written to `settings`.
+## Important paths
 
-## YOLO Training
+- Trained model:
+  `image_classification\runs\pass_ng_classifier\weights\best.pt`
+- Prediction input:
+  `image_classification\predict_images`
+- Prediction report:
+  `image_classification\prediction_results`
+- Realtime input:
+  `Input_files\Picture`
+- Product CSV:
+  `Input_files\Product Info`
 
-1. Put images in `yolo\images`.
-2. Put matching YOLO labels in `yolo\labels`.
-3. Edit `yolo\setting.txt`.
-4. Run `3_CHECK_TRAINING.bat`.
-5. Run `2_TRAIN_YOLO.bat`.
-
-Training results are written to:
-
-```text
-yolo\runs\<run_name>\weights\best.pt
-```
-
-The checked GTX 1060 3GB baseline is:
-
-```ini
-image_size = 320
-batch = 1
-workers = 0
-device = 0
-```
-
-## Real-Time Monitor
-
-`4_REALTIME_MONITOR.bat` opens the real-time Sobel and YOLO monitor.
-
-Default paths:
-
-```text
-Images: Input_files\Picture
-CSV: Input_files\Product Info
-Model: best.pt
-Output: Output_files\Sobel_Image_OBB
-```
-
-## Project Layout
-
-```text
-apps\          Packaged Windows applications
-assets\        Application icons
-Input_files\   Runtime images and Product Info CSV files
-Output_files\  Generated images and logs
-settings\      Sobel recipes
-yolo\          Training dataset, settings, and runs
-src\           Production source code
-tests\         Automated tests
-scripts\       Build and maintenance scripts
-```
+This project uses whole-image YOLO classification. It does not use
+object-detection boxes, detection labels, or `data.yaml`.

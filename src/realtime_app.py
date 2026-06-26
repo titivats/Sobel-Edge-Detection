@@ -4,6 +4,7 @@ import argparse
 import queue
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -20,14 +21,21 @@ from app_paths import (
 from app_preferences import RealtimePreferences, save_realtime_preferences
 from realtime_config import (
     ACCENT,
+    ACCENT_DARK,
     BG,
+    CARD_BORDER,
     DEFAULT_OUTPUT_DIR,
+    DIVIDER,
+    HEADER_MUTED,
+    HEADER_TEXT,
     MUTED,
     NG_COLOR,
     PANEL,
     PANEL_2,
     PANEL_3,
     PASS_COLOR,
+    SIDEBAR,
+    SYSTEM_ONLINE,
     TEXT,
     UNKNOWN_COLOR,
 )
@@ -35,8 +43,9 @@ from realtime_predictor import PredictionView, RealtimePredictor
 
 MAX_RESULT_CARDS = 60
 QUEUE_CAPACITY = 200
-RESULT_CARD_WIDTH = 600
-RESULT_CARD_GAP = 28
+RESULT_CARD_WIDTH = 570
+RESULT_CARD_GAP = 22
+HEADER_HEIGHT = 116
 
 
 @dataclass(frozen=True)
@@ -50,7 +59,7 @@ class RealtimePredictUi:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.root = tk.Tk()
-        self.root.title("Edge Detection Monitor")
+        self.root.title("Realtime Edge Detection Monitor")
         self.root.geometry("1920x1080")
         self.root.minsize(1280, 720)
         self.root.configure(background=BG)
@@ -69,6 +78,11 @@ class RealtimePredictUi:
 
         self.status_var = tk.StringVar(value="Starting...")
         self.count_var = tk.StringVar(value="PASS 0   NG 0   UNKNOWN 0")
+        self.pass_count_var = tk.StringVar(value="0")
+        self.ng_count_var = tk.StringVar(value="0")
+        self.unknown_count_var = tk.StringVar(value="0")
+        self.clock_var = tk.StringVar(value="")
+        self.system_state_var = tk.StringVar(value="INITIALIZING")
         self.pass_count = 0
         self.ng_count = 0
         self.unknown_count = 0
@@ -81,23 +95,24 @@ class RealtimePredictUi:
         self.build_result_tab()
         self.build_config_tab()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.update_clock()
 
     def configure_style(self) -> None:
         self.style = ttk.Style()
         self.style.theme_use("clam")
-        self.style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(8, 5, 0, 0))
+        self.style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(16, 8, 0, 0))
         self.style.configure(
             "TNotebook.Tab",
-            padding=(14, 5),
+            padding=(18, 8),
             font=("Segoe UI", 10, "bold"),
-            background="#e5e7eb",
-            foreground="#111827",
+            background="#fee2e2",
+            foreground="#7f1d1d",
             borderwidth=1,
         )
         self.style.map(
             "TNotebook.Tab",
-            background=[("selected", PANEL), ("active", "#d1d5db")],
-            foreground=[("selected", TEXT), ("active", "#111827")],
+            background=[("selected", ACCENT_DARK), ("active", "#fecaca")],
+            foreground=[("selected", HEADER_TEXT), ("active", "#7f1d1d")],
         )
         self.style.configure("TFrame", background=BG)
 
@@ -111,63 +126,209 @@ class RealtimePredictUi:
 
     def build_result_tab(self) -> None:
         self.build_result_header()
-        self.canvas = tk.Canvas(self.result_tab, background=BG, highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(self.result_tab, orient="vertical", command=self.canvas.yview)
+        self.build_monitor_toolbar()
+        viewport = tk.Frame(self.result_tab, background=BG)
+        viewport.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+        self.canvas = tk.Canvas(
+            viewport,
+            background=BG,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+        )
+        self.vertical_scrollbar = tk.Scrollbar(
+            viewport,
+            orient="vertical",
+            command=self.canvas.yview,
+        )
+        self.horizontal_scrollbar = tk.Scrollbar(
+            viewport,
+            orient="horizontal",
+            command=self.canvas.xview,
+        )
         self.content = tk.Frame(self.canvas, background=BG)
         self.content.bind(
             "<Configure>",
             lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
         )
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas_window = self.canvas.create_window(
+            (0, 0),
+            window=self.content,
+            anchor="nw",
+        )
+        self.canvas.configure(
+            yscrollcommand=self.vertical_scrollbar.set,
+            xscrollcommand=self.horizontal_scrollbar.set,
+        )
         self.canvas.bind("<Configure>", self.resize_content)
         self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind_all("<Shift-MouseWheel>", self.on_horizontal_mousewheel)
         self.canvas.bind_all("<Button-4>", lambda _event: self.canvas.yview_scroll(-3, "units"))
         self.canvas.bind_all("<Button-5>", lambda _event: self.canvas.yview_scroll(3, "units"))
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
 
     def build_result_header(self) -> None:
-        header = tk.Frame(self.result_tab, background=PANEL, padx=18, pady=14)
-        header.pack(fill="x", padx=16, pady=(14, 8))
+        header = tk.Frame(
+            self.result_tab,
+            background=SIDEBAR,
+            padx=22,
+            pady=16,
+            height=HEADER_HEIGHT,
+        )
+        header.pack(fill="x", padx=16, pady=(14, 10))
+        header.pack_propagate(False)
         title_area = tk.Frame(header, background=PANEL)
+        title_area.configure(background=SIDEBAR)
         title_area.pack(side="left", fill="x", expand=True)
+        brand_line = tk.Frame(title_area, background=SIDEBAR)
+        brand_line.pack(fill="x")
+        tk.Label(
+            brand_line,
+            text="AUROTEK  |  MACHINE VISION",
+            anchor="w",
+            font=("Segoe UI", 9, "bold"),
+            foreground=HEADER_MUTED,
+            background=SIDEBAR,
+        ).pack(side="left")
+        tk.Label(
+            brand_line,
+            textvariable=self.clock_var,
+            anchor="e",
+            font=("Consolas", 10, "bold"),
+            foreground=HEADER_TEXT,
+            background=SIDEBAR,
+        ).pack(side="right")
         tk.Label(
             title_area,
-            text="Edge Detection Monitor",
+            text="Realtime Edge Detection Monitor",
             anchor="w",
-            font=("Segoe UI", 19, "bold"),
-            foreground=TEXT,
-            background=PANEL,
-        ).pack(fill="x")
+            font=("Segoe UI Semibold", 23),
+            foreground=HEADER_TEXT,
+            background=SIDEBAR,
+        ).pack(fill="x", pady=(5, 0))
         tk.Label(
             title_area,
             textvariable=self.status_var,
             anchor="w",
             font=("Segoe UI", 10),
+            foreground=HEADER_MUTED,
+            background=SIDEBAR,
+        ).pack(fill="x", pady=(3, 0))
+        metrics = tk.Frame(header, background=SIDEBAR)
+        metrics.pack(side="right")
+        self._add_metric(metrics, "PASS", self.pass_count_var, PASS_COLOR)
+        self._add_metric(metrics, "NG", self.ng_count_var, NG_COLOR)
+        self._add_metric(metrics, "UNKNOWN", self.unknown_count_var, UNKNOWN_COLOR)
+
+    def build_monitor_toolbar(self) -> None:
+        toolbar = tk.Frame(
+            self.result_tab,
+            background=PANEL,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+            padx=16,
+            pady=10,
+        )
+        toolbar.pack(fill="x", padx=16, pady=(0, 10))
+        tk.Label(
+            toolbar,
+            text="●",
+            foreground=SYSTEM_ONLINE,
+            background=PANEL,
+            font=("Segoe UI", 13, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            toolbar,
+            textvariable=self.system_state_var,
+            foreground="#374151",
+            background=PANEL,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(6, 18))
+        tk.Frame(toolbar, background=DIVIDER, width=1, height=24).pack(side="left")
+        tk.Label(
+            toolbar,
+            text="Automatic inspection  •  PASS / NG classification  •  GPU inference",
             foreground=MUTED,
             background=PANEL,
-        ).pack(fill="x", pady=(3, 0))
-
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=18)
         tk.Label(
-            header,
-            textvariable=self.count_var,
-            font=("Segoe UI", 12, "bold"),
-            foreground=ACCENT,
-            background=PANEL_2,
-            padx=18,
-            pady=10,
+            toolbar,
+            text="LIVE PRODUCTION",
+            foreground="#ffffff",
+            background=ACCENT_DARK,
+            font=("Segoe UI", 9, "bold"),
+            padx=14,
+            pady=5,
         ).pack(side="right")
 
+    def _add_metric(
+        self,
+        parent: tk.Widget,
+        label: str,
+        variable: tk.StringVar,
+        color: str,
+    ) -> None:
+        card = tk.Frame(
+            parent,
+            background=PANEL_2,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+            padx=16,
+            pady=8,
+        )
+        card.pack(side="left", padx=(10, 0))
+        tk.Label(
+            card,
+            textvariable=variable,
+            foreground=color,
+            background=PANEL_2,
+            font=("Segoe UI Semibold", 20),
+        ).pack()
+        tk.Label(
+            card,
+            text=label,
+            foreground="#7f1d1d",
+            background=PANEL_2,
+            font=("Segoe UI", 9, "bold"),
+        ).pack()
+
     def build_config_tab(self) -> None:
-        panel = tk.Frame(self.config_tab, background=PANEL, padx=22, pady=20)
+        title = tk.Label(
+            self.config_tab,
+            text="MONITOR CONFIGURATION",
+            anchor="w",
+            font=("Segoe UI Semibold", 22),
+            foreground="#111827",
+            background=BG,
+        )
+        title.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            self.config_tab,
+            text="Configure production data sources and result storage. Changes apply without restarting.",
+            anchor="w",
+            font=("Segoe UI", 10),
+            foreground=MUTED,
+            background=BG,
+        ).pack(fill="x", pady=(0, 18))
+        panel = tk.Frame(
+            self.config_tab,
+            background=PANEL,
+            padx=26,
+            pady=24,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+        )
         panel.pack(fill="x")
         tk.Label(
             panel,
-            text="Path Config",
+            text="Data Sources & Output",
             anchor="w",
             font=("Segoe UI", 18, "bold"),
-            foreground=TEXT,
+            foreground="#111827",
             background=PANEL,
         ).pack(fill="x", pady=(0, 20))
 
@@ -194,9 +355,9 @@ class RealtimePredictUi:
             text="Apply",
             command=self.apply_config,
             font=("Segoe UI", 11, "bold"),
-            background=ACCENT,
+            background=ACCENT_DARK,
             foreground="#ffffff",
-            activebackground="#60a5fa",
+            activebackground="#991b1b",
             activeforeground="#ffffff",
             relief="flat",
             padx=24,
@@ -208,13 +369,21 @@ class RealtimePredictUi:
             command=self.reset_config_defaults,
             font=("Segoe UI", 11),
             background=PANEL_3,
-            foreground=TEXT,
-            activebackground="#334155",
-            activeforeground="#ffffff",
+            foreground="#111827",
+            activebackground="#fecaca",
+            activeforeground="#7f1d1d",
             relief="flat",
             padx=18,
             pady=8,
         ).pack(side="left", padx=(10, 0))
+        tk.Label(
+            panel,
+            text="Configuration is stored locally and restored at the next dashboard startup.",
+            anchor="w",
+            font=("Segoe UI", 9),
+            foreground=MUTED,
+            background=PANEL,
+        ).pack(fill="x", pady=(18, 0))
 
     def add_path_row(
         self, parent: tk.Widget, label: str, variable: tk.StringVar, help_text: str
@@ -227,16 +396,16 @@ class RealtimePredictUi:
             width=14,
             anchor="w",
             font=("Segoe UI", 12, "bold"),
-            foreground=TEXT,
+            foreground="#111827",
             background=PANEL,
         ).pack(side="left")
         tk.Entry(
             row,
             textvariable=variable,
             font=("Consolas", 11),
-            foreground=TEXT,
+            foreground="#111827",
             background=PANEL_2,
-            insertbackground=TEXT,
+            insertbackground="#111827",
             relief="flat",
         ).pack(side="left", fill="x", expand=True, ipady=8)
         tk.Button(
@@ -245,9 +414,9 @@ class RealtimePredictUi:
             command=lambda: self.browse_directory(variable),
             font=("Segoe UI", 10),
             background=PANEL_3,
-            foreground=TEXT,
-            activebackground="#334155",
-            activeforeground="#ffffff",
+            foreground="#7f1d1d",
+            activebackground="#fecaca",
+            activeforeground="#7f1d1d",
             relief="flat",
             padx=14,
             pady=7,
@@ -331,8 +500,10 @@ class RealtimePredictUi:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def resize_content(self, event: tk.Event) -> None:
-        self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        columns = max(1, event.width // (RESULT_CARD_WIDTH + RESULT_CARD_GAP))
+        minimum_dashboard_width = (RESULT_CARD_WIDTH + RESULT_CARD_GAP) * 3
+        content_width = max(event.width, minimum_dashboard_width)
+        self.canvas.itemconfigure(self.canvas_window, width=content_width)
+        columns = max(1, content_width // (RESULT_CARD_WIDTH + RESULT_CARD_GAP))
         if columns != self.result_columns:
             self.result_columns = columns
             self._layout_result_cards()
@@ -340,10 +511,19 @@ class RealtimePredictUi:
     def on_mousewheel(self, event: tk.Event) -> None:
         self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
 
+    def on_horizontal_mousewheel(self, event: tk.Event) -> str:
+        self.canvas.xview_scroll(int(-1 * (event.delta / 120) * 3), "units")
+        return "break"
+
     def start(self) -> None:
         threading.Thread(target=self.worker_loop, daemon=True).start()
         self.root.after(200, self.consume_queue)
         self.root.mainloop()
+
+    def update_clock(self) -> None:
+        self.clock_var.set(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
+        if self.running:
+            self.root.after(1000, self.update_clock)
 
     def close(self) -> None:
         self.running = False
@@ -352,7 +532,7 @@ class RealtimePredictUi:
 
     def worker_loop(self) -> None:
         try:
-            self._queue_item(RuntimeStatus("Loading YOLO model..."))
+            self._queue_item(RuntimeStatus("Loading YOLO classification model..."))
             predictor = self.create_predictor()
             with self.predictor_lock:
                 self.predictor = predictor
@@ -374,7 +554,7 @@ class RealtimePredictUi:
                     pending_config = self.pending_config
                     self.pending_config = None
                 if predictor is None:
-                    self._queue_item(RuntimeStatus("Waiting for YOLO model..."))
+                    self._queue_item(RuntimeStatus("Waiting for YOLO classification model..."))
                     self.stop_event.wait(max(float(self.args.poll_seconds), 0.5))
                     continue
                 if pending_config is not None:
@@ -404,8 +584,10 @@ class RealtimePredictUi:
             items_handled += 1
             if isinstance(item, RuntimeStatus):
                 self.status_var.set(item.message)
+                self.system_state_var.set("SYSTEM ONLINE")
             elif isinstance(item, Exception):
                 self.status_var.set(f"Error: {item}")
+                self.system_state_var.set("SYSTEM ALERT")
             else:
                 self.add_prediction(item)
         if self.running:
@@ -417,19 +599,26 @@ class RealtimePredictUi:
         image.thumbnail((560, 420))
         photo = ImageTk.PhotoImage(image)
 
-        card = tk.Frame(
+        card_shell = tk.Frame(
             self.content,
-            background=PANEL,
-            padx=1,
-            pady=1,
+            background=CARD_BORDER,
+            padx=2,
+            pady=2,
             width=RESULT_CARD_WIDTH,
-            height=520,
+            height=530,
         )
+        card_shell.grid_propagate(False)
+        card = tk.Frame(card_shell, background=PANEL)
+        card.pack(fill="both", expand=True)
         card.grid_propagate(False)
-        image_panel = tk.Frame(card, background="#0f172a", padx=8, pady=8)
+        image_panel = tk.Frame(card, background="#111827", padx=8, pady=8)
         image_panel.pack(fill="x")
-        tk.Label(image_panel, image=photo, background="#0f172a").pack()
-        labels = ", ".join(view.class_names) if view.class_names else "No detection"
+        tk.Label(image_panel, image=photo, background="#111827").pack()
+        labels = (
+            f"{view.class_names[0]} ({view.confidence:.1%})"
+            if view.class_names
+            else "No classification"
+        )
         color = (
             PASS_COLOR
             if view.status == "PASS"
@@ -442,7 +631,7 @@ class RealtimePredictUi:
         tk.Label(
             top_line,
             text=f"POINT {view.point_number:03d}",
-            foreground=TEXT,
+            foreground="#7f1d1d",
             background=PANEL_3,
             font=("Segoe UI", 10, "bold"),
             padx=10,
@@ -459,7 +648,7 @@ class RealtimePredictUi:
         ).pack(side="right")
         detail = (
             f"{view.image_path.name}\n"
-            f"{labels}\n"
+            f"Classification: {labels}\n"
             f"SN: {view.product_info.sn or '-'} | Table: {view.product_info.cuted_table or '-'}\n"
             f"Product: {view.product_info.product_id or '-'} | Recipe: {view.product_info.recipe_name or '-'}\n"
             f"{view.product_info.csv_path.name if view.product_info.csv_path else '-'}"
@@ -469,12 +658,12 @@ class RealtimePredictUi:
             text=detail,
             justify="left",
             anchor="nw",
-            foreground=TEXT,
+            foreground="#111827",
             background=PANEL,
             font=("Segoe UI", 10),
             wraplength=560,
         ).pack(fill="both", expand=True, pady=(8, 0))
-        self.result_cards.append((card, photo))
+        self.result_cards.append((card_shell, photo))
         if len(self.result_cards) > MAX_RESULT_CARDS:
             oldest_card, _oldest_photo = self.result_cards.pop(0)
             oldest_card.destroy()
@@ -505,6 +694,9 @@ class RealtimePredictUi:
         self.update_counts()
 
     def update_counts(self) -> None:
+        self.pass_count_var.set(str(self.pass_count))
+        self.ng_count_var.set(str(self.ng_count))
+        self.unknown_count_var.set(str(self.unknown_count))
         self.count_var.set(
             f"PASS {self.pass_count}   NG {self.ng_count}   UNKNOWN {self.unknown_count}"
         )

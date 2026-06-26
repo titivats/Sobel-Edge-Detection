@@ -1,5 +1,5 @@
 param(
-    [string] $ExeName = "Sobel_YOLO_Fine_Tune",
+    [string] $ExeName = "Finetune",
     [ValidateSet("onedir", "onefile")]
     [string] $Mode = "onedir",
     [switch] $Console
@@ -10,7 +10,8 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
 $EntryPoint = Join-Path $ProjectRoot "src\fine_tune_entry.py"
 $BuildDir = Join-Path $ProjectRoot "build"
-$DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "apps" } else { $ProjectRoot }
+$DistDir = Join-Path $BuildDir "finetune-dist"
+$PackageDir = Join-Path $ProjectRoot "finetune"
 $IconPath = Join-Path $ProjectRoot "assets\sobel_fine_tune_icon.ico"
 
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -29,7 +30,9 @@ try {
         "-m",
         "PyInstaller",
         "--noconfirm",
-        "--clean"
+        "--clean",
+        "--specpath",
+        $BuildDir
     ) + $WindowModeArgs + $BuildModeArgs + @(
         "--name",
         $ExeName,
@@ -50,10 +53,26 @@ try {
     }
 
     if ($Mode -eq "onedir") {
-        Write-Host "Created: $(Join-Path $DistDir "$ExeName\$ExeName.exe")"
+        $BuiltApp = Join-Path $DistDir $ExeName
+        if (Test-Path -LiteralPath $PackageDir) {
+            Remove-Item -LiteralPath $PackageDir -Recurse -Force
+        }
+        Move-Item -LiteralPath $BuiltApp -Destination $PackageDir
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets") -Destination $PackageDir -Recurse
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings") -Destination $PackageDir -Recurse
+        Write-Host "Created: $(Join-Path $PackageDir "$ExeName.exe")"
     }
     else {
-        Write-Host "Created: $(Join-Path $ProjectRoot "$ExeName.exe")"
+        $BuiltExe = Join-Path $DistDir "$ExeName.exe"
+        New-Item -ItemType Directory -Path $PackageDir -Force | Out-Null
+        Move-Item -LiteralPath $BuiltExe -Destination (Join-Path $PackageDir "$ExeName.exe") -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets") -Destination $PackageDir -Recurse -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings") -Destination $PackageDir -Recurse -Force
+        Write-Host "Created: $(Join-Path $PackageDir "$ExeName.exe")"
+    }
+
+    if (Test-Path -LiteralPath $BuildDir) {
+        Remove-Item -LiteralPath $BuildDir -Recurse -Force
     }
 }
 finally {
