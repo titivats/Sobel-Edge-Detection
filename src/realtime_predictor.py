@@ -11,7 +11,7 @@ import torch
 
 from file_io import atomic_write_image, read_image
 from realtime_config import IMAGE_EXTENSIONS
-from realtime_overlay import draw_classification_overlay, make_sobel_bgr
+from realtime_overlay import make_sobel_bgr
 from realtime_product_info import (
     CsvPointCounter,
     ProductCsvIndex,
@@ -30,6 +30,7 @@ class PredictionView:
     class_names: list[str]
     confidence: float
     product_info: ProductInfo
+    original_bgr: np.ndarray
     image_bgr: np.ndarray
 
 
@@ -148,19 +149,11 @@ class RealtimePredictor:
             if prediction_confidence >= self.confidence and normalized_class in {"PASS", "NG"}
             else "UNKNOWN"
         )
-        annotated = draw_classification_overlay(
-            sobel_bgr,
-            status,
-            predicted_class,
-            prediction_confidence,
-            point_number,
-            product_info,
-        )
         csv_stem = product_info.csv_path.stem if product_info.csv_path else "no_csv"
         output_path = (
             self.output_dir / f"{csv_stem}_point{point_number:03d}_{image_path.stem}_predicted.png"
         )
-        atomic_write_image(output_path, annotated)
+        atomic_write_image(output_path, sobel_bgr)
         return PredictionView(
             image_path=image_path,
             output_path=output_path,
@@ -169,5 +162,6 @@ class RealtimePredictor:
             class_names=[predicted_class],
             confidence=prediction_confidence,
             product_info=product_info,
-            image_bgr=annotated,
+            original_bgr=image_bgr,
+            image_bgr=sobel_bgr,
         )

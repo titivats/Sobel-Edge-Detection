@@ -43,7 +43,8 @@ from realtime_predictor import PredictionView, RealtimePredictor
 
 MAX_RESULT_CARDS = 60
 QUEUE_CAPACITY = 200
-RESULT_CARD_WIDTH = 570
+RESULT_COLUMNS = 2
+RESULT_CARD_WIDTH = 890
 RESULT_CARD_GAP = 22
 HEADER_HEIGHT = 140
 METRIC_CARD_WIDTH = 96
@@ -70,8 +71,8 @@ class RealtimePredictUi:
         self.queue: queue.Queue[PredictionView | RuntimeStatus | Exception] = queue.Queue(
             maxsize=QUEUE_CAPACITY
         )
-        self.result_cards: list[tuple[tk.Frame, ImageTk.PhotoImage]] = []
-        self.result_columns = 3
+        self.result_cards: list[tuple[tk.Frame, tuple[ImageTk.PhotoImage, ImageTk.PhotoImage]]] = []
+        self.result_columns = RESULT_COLUMNS
         self.running = True
         self.stop_event = threading.Event()
         self.predictor_lock = threading.Lock()
@@ -562,13 +563,11 @@ class RealtimePredictUi:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def resize_content(self, event: tk.Event) -> None:
-        minimum_dashboard_width = (RESULT_CARD_WIDTH + RESULT_CARD_GAP) * 3
+        minimum_dashboard_width = (RESULT_CARD_WIDTH + RESULT_CARD_GAP) * RESULT_COLUMNS
         content_width = max(event.width, minimum_dashboard_width)
         self.canvas.itemconfigure(self.canvas_window, width=content_width)
-        columns = max(1, content_width // (RESULT_CARD_WIDTH + RESULT_CARD_GAP))
-        if columns != self.result_columns:
-            self.result_columns = columns
-            self._layout_result_cards()
+        self.result_columns = RESULT_COLUMNS
+        self._layout_result_cards()
 
     def on_mousewheel(self, event: tk.Event) -> None:
         self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
@@ -656,10 +655,8 @@ class RealtimePredictUi:
             self.root.after(50 if not self.queue.empty() else 200, self.consume_queue)
 
     def add_prediction(self, view: PredictionView) -> None:
-        rgb = cv2.cvtColor(view.image_bgr, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
-        image.thumbnail((560, 420))
-        photo = ImageTk.PhotoImage(image)
+        original_photo = self._make_photo(view.original_bgr, (420, 330))
+        sobel_photo = self._make_photo(view.image_bgr, (420, 330))
 
         card_shell = tk.Frame(
             self.content,
@@ -667,7 +664,7 @@ class RealtimePredictUi:
             padx=2,
             pady=2,
             width=RESULT_CARD_WIDTH,
-            height=530,
+            height=690,
         )
         card_shell.grid_propagate(False)
         card = tk.Frame(card_shell, background=PANEL)
@@ -675,7 +672,8 @@ class RealtimePredictUi:
         card.grid_propagate(False)
         image_panel = tk.Frame(card, background="#111827", padx=8, pady=8)
         image_panel.pack(fill="x")
-        tk.Label(image_panel, image=photo, background="#111827").pack()
+        self._add_image_preview(image_panel, "Original Image", original_photo)
+        self._add_image_preview(image_panel, "Sobel Edge Detection", sobel_photo)
         labels = (
             f"{view.class_names[0]} ({view.confidence:.1%})"
             if view.class_names
@@ -695,7 +693,7 @@ class RealtimePredictUi:
             text=f"POINT {view.point_number:03d}",
             foreground="#7f1d1d",
             background=PANEL_3,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
             padx=10,
             pady=4,
         ).pack(side="left")
@@ -704,7 +702,7 @@ class RealtimePredictUi:
             text=view.status,
             foreground="#ffffff",
             background=color,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
             padx=12,
             pady=4,
         ).pack(side="right")
@@ -722,10 +720,10 @@ class RealtimePredictUi:
             anchor="nw",
             foreground="#111827",
             background=PANEL,
-            font=("Segoe UI", 10),
-            wraplength=560,
+            font=("Segoe UI", 11),
+            wraplength=852,
         ).pack(fill="both", expand=True, pady=(8, 0))
-        self.result_cards.append((card_shell, photo))
+        self.result_cards.append((card_shell, (original_photo, sobel_photo)))
         if len(self.result_cards) > MAX_RESULT_CARDS:
             oldest_card, _oldest_photo = self.result_cards.pop(0)
             oldest_card.destroy()
@@ -735,6 +733,33 @@ class RealtimePredictUi:
             f"Latest: {view.image_path.name} -> Point {view.point_number} {view.status}. "
             f"Saved: {view.output_path}"
         )
+
+    def _make_photo(self, image_bgr, max_size: tuple[int, int]) -> ImageTk.PhotoImage:
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        image.thumbnail(max_size)
+        return ImageTk.PhotoImage(image)
+
+    def _add_image_preview(
+        self,
+        parent: tk.Widget,
+        title: str,
+        photo: ImageTk.PhotoImage,
+    ) -> None:
+        preview = tk.Frame(parent, background="#111827", width=424, height=364)
+        preview.pack(side="left", fill="both", expand=True, padx=4)
+        preview.pack_propagate(False)
+        inner = tk.Frame(preview, background="#111827")
+        inner.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(
+            inner,
+            text=title,
+            foreground="#fecaca",
+            background="#111827",
+            font=("Segoe UI", 10, "bold"),
+            anchor="center",
+        ).pack(fill="x", pady=(0, 8))
+        tk.Label(inner, image=photo, background="#111827").pack()
 
     def _layout_result_cards(self) -> None:
         for index, (card, _photo) in enumerate(self.result_cards):

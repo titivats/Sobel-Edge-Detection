@@ -64,5 +64,5 @@ FINE_TUNE_WORKSPACE_ROOT = (
 DEFAULT_FINE_TUNE_IMAGE_DIR = FINE_TUNE_WORKSPACE_ROOT / "Input_files" / "Picture"
 DEFAULT_TUNING_OUTPUT_DIR = FINE_TUNE_WORKSPACE_ROOT / "Output_Sobel"
 DEFAULT_REALTIME_OUTPUT_DIR = OUTPUT_DIR / "Sobel_Final_Result"
-APP_ICON = ASSETS_DIR / "edge_detection_monitor.ico"
+APP_ICON = ASSETS_DIR / "realtime_edge_detection_monitor_icon.ico"
 SOBEL_FINE_TUNE_ICON = ASSETS_DIR / "sobel_fine_tune_icon.ico"

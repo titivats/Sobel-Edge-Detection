@@ -11,7 +11,7 @@ $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
 $EntryPoint = Join-Path $ProjectRoot "src\realtime_predict_ui.py"
 $BuildDir = Join-Path $ProjectRoot "build"
 $DistDir = if ($Mode -eq "onedir") { Join-Path $ProjectRoot "apps" } else { $ProjectRoot }
-$IconPath = Join-Path $ProjectRoot "assets\edge_detection_monitor.ico"
+$IconPath = Join-Path $ProjectRoot "assets\realtime_edge_detection_monitor_icon.ico"
 
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python venv not found: $Python"

@@ -21,42 +21,6 @@ def draw_classification_overlay(
     product_info: ProductInfo,
 ) -> np.ndarray:
     canvas = image_bgr.copy()
-    status_color = (
-        (0, 0, 255) if status == "NG" else (0, 180, 0) if status == "PASS" else (0, 180, 255)
-    )
-    height, width = canvas.shape[:2]
-    font_scale = max(2.0, min(width, height) / 260.0)
-    thickness = max(3, int(font_scale * 2))
-    status_text = f"{status} {confidence:.1%}"
-    text_size, _baseline = cv2.getTextSize(
-        status_text,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        thickness,
-    )
-    text_x = max(0, (width - text_size[0]) // 2)
-    text_y = max(text_size[1] + 10, height // 2)
-    cv2.putText(
-        canvas,
-        status_text,
-        (text_x, text_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        (0, 0, 0),
-        thickness + 5,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        canvas,
-        status_text,
-        (text_x, text_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        status_color,
-        thickness,
-        cv2.LINE_AA,
-    )
-
     metadata_lines = [
         f"Class: {predicted_class}",
         f"Confidence: {confidence:.2%}",
