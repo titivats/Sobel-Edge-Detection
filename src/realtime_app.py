@@ -45,7 +45,9 @@ MAX_RESULT_CARDS = 60
 QUEUE_CAPACITY = 200
 RESULT_CARD_WIDTH = 570
 RESULT_CARD_GAP = 22
-HEADER_HEIGHT = 116
+HEADER_HEIGHT = 140
+METRIC_CARD_WIDTH = 96
+METRIC_CARD_HEIGHT = 82
 
 
 @dataclass(frozen=True)
@@ -100,24 +102,59 @@ class RealtimePredictUi:
     def configure_style(self) -> None:
         self.style = ttk.Style()
         self.style.theme_use("clam")
-        self.style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(16, 8, 0, 0))
+        self.style.layout(
+            "Dashboard.TNotebook.Tab",
+            [
+                (
+                    "Notebook.tab",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            (
+                                "Notebook.padding",
+                                {
+                                    "side": "top",
+                                    "sticky": "nswe",
+                                    "children": [
+                                        (
+                                            "Notebook.label",
+                                            {"side": "top", "sticky": ""},
+                                        )
+                                    ],
+                                },
+                            )
+                        ],
+                    },
+                )
+            ],
+        )
         self.style.configure(
-            "TNotebook.Tab",
-            padding=(18, 8),
+            "Dashboard.TNotebook",
+            background=BG,
+            borderwidth=0,
+            tabmargins=(16, 8, 0, 0),
+        )
+        self.style.configure(
+            "Dashboard.TNotebook.Tab",
+            padding=(18, 9),
             font=("Segoe UI", 10, "bold"),
             background="#fee2e2",
             foreground="#7f1d1d",
             borderwidth=1,
+            relief="solid",
         )
         self.style.map(
-            "TNotebook.Tab",
+            "Dashboard.TNotebook.Tab",
             background=[("selected", ACCENT_DARK), ("active", "#fecaca")],
             foreground=[("selected", HEADER_TEXT), ("active", "#7f1d1d")],
+            expand=[("selected", (0, 0, 0, 0))],
+            padding=[("selected", (18, 9)), ("!selected", (18, 9))],
+            borderwidth=[("selected", 1), ("!selected", 1)],
         )
         self.style.configure("TFrame", background=BG)
 
     def build_tabs(self) -> None:
-        self.notebook = ttk.Notebook(self.root)
+        self.notebook = ttk.Notebook(self.root, style="Dashboard.TNotebook")
         self.result_tab = tk.Frame(self.notebook, background=BG)
         self.config_tab = tk.Frame(self.notebook, background=BG, padx=28, pady=26)
         self.notebook.add(self.result_tab, text="Result")
@@ -182,7 +219,7 @@ class RealtimePredictUi:
         header.pack_propagate(False)
         title_area = tk.Frame(header, background=PANEL)
         title_area.configure(background=SIDEBAR)
-        title_area.pack(side="left", fill="x", expand=True)
+        title_area.pack(side="left", fill="both", expand=True, padx=(0, 18))
         brand_line = tk.Frame(title_area, background=SIDEBAR)
         brand_line.pack(fill="x")
         tk.Label(
@@ -194,21 +231,13 @@ class RealtimePredictUi:
             background=SIDEBAR,
         ).pack(side="left")
         tk.Label(
-            brand_line,
-            textvariable=self.clock_var,
-            anchor="e",
-            font=("Consolas", 10, "bold"),
-            foreground=HEADER_TEXT,
-            background=SIDEBAR,
-        ).pack(side="right")
-        tk.Label(
             title_area,
             text="Realtime Edge Detection Monitor",
             anchor="w",
-            font=("Segoe UI Semibold", 23),
+            font=("Segoe UI Semibold", 22),
             foreground=HEADER_TEXT,
             background=SIDEBAR,
-        ).pack(fill="x", pady=(5, 0))
+        ).pack(fill="x", pady=(8, 0))
         tk.Label(
             title_area,
             textvariable=self.status_var,
@@ -216,9 +245,20 @@ class RealtimePredictUi:
             font=("Segoe UI", 10),
             foreground=HEADER_MUTED,
             background=SIDEBAR,
-        ).pack(fill="x", pady=(3, 0))
-        metrics = tk.Frame(header, background=SIDEBAR)
-        metrics.pack(side="right")
+            wraplength=1040,
+        ).pack(fill="x", pady=(6, 0))
+        metrics_area = tk.Frame(header, background=SIDEBAR)
+        metrics_area.pack(side="right", fill="y")
+        tk.Label(
+            metrics_area,
+            textvariable=self.clock_var,
+            anchor="e",
+            font=("Consolas", 10, "bold"),
+            foreground=HEADER_TEXT,
+            background=SIDEBAR,
+        ).pack(fill="x", pady=(0, 13))
+        metrics = tk.Frame(metrics_area, background=SIDEBAR)
+        metrics.pack(side="top")
         self._add_metric(metrics, "PASS", self.pass_count_var, PASS_COLOR)
         self._add_metric(metrics, "NG", self.ng_count_var, NG_COLOR)
         self._add_metric(metrics, "UNKNOWN", self.unknown_count_var, UNKNOWN_COLOR)
@@ -277,29 +317,35 @@ class RealtimePredictUi:
             background=PANEL_2,
             highlightthickness=1,
             highlightbackground=CARD_BORDER,
-            padx=16,
-            pady=8,
+            width=METRIC_CARD_WIDTH,
+            height=METRIC_CARD_HEIGHT,
         )
         card.pack(side="left", padx=(10, 0))
+        card.pack_propagate(False)
+        center = tk.Frame(card, background=PANEL_2)
+        center.place(relx=0.5, rely=0.52, anchor="center")
         tk.Label(
-            card,
+            center,
             textvariable=variable,
             foreground=color,
             background=PANEL_2,
             font=("Segoe UI Semibold", 20),
+            anchor="center",
+            width=4,
         ).pack()
         tk.Label(
-            card,
+            center,
             text=label,
             foreground="#7f1d1d",
             background=PANEL_2,
             font=("Segoe UI", 9, "bold"),
-        ).pack()
+            anchor="center",
+        ).pack(pady=(4, 0))
 
     def build_config_tab(self) -> None:
         title = tk.Label(
             self.config_tab,
-            text="MONITOR CONFIGURATION",
+            text="Configuration for Data Import/Export",
             anchor="w",
             font=("Segoe UI Semibold", 22),
             foreground="#111827",
@@ -359,7 +405,11 @@ class RealtimePredictUi:
             foreground="#ffffff",
             activebackground="#991b1b",
             activeforeground="#ffffff",
-            relief="flat",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground="#7f1d1d",
+            highlightcolor="#7f1d1d",
             padx=24,
             pady=8,
         ).pack(side="left")
@@ -372,7 +422,11 @@ class RealtimePredictUi:
             foreground="#111827",
             activebackground="#fecaca",
             activeforeground="#7f1d1d",
-            relief="flat",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+            highlightcolor=ACCENT_DARK,
             padx=18,
             pady=8,
         ).pack(side="left", padx=(10, 0))
@@ -406,7 +460,11 @@ class RealtimePredictUi:
             foreground="#111827",
             background=PANEL_2,
             insertbackground="#111827",
-            relief="flat",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+            highlightcolor=ACCENT_DARK,
         ).pack(side="left", fill="x", expand=True, ipady=8)
         tk.Button(
             row,
@@ -417,7 +475,11 @@ class RealtimePredictUi:
             foreground="#7f1d1d",
             activebackground="#fecaca",
             activeforeground="#7f1d1d",
-            relief="flat",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=CARD_BORDER,
+            highlightcolor=ACCENT_DARK,
             padx=14,
             pady=7,
         ).pack(side="left", padx=(10, 0))
