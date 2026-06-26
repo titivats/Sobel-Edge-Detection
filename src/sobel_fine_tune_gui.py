@@ -30,7 +30,18 @@ DISPLAY_MAX_WIDTH = 620
 DISPLAY_MAX_HEIGHT = 560
 WINDOW_BG = "#f3f4f6"
 IMAGE_BG = "#111827"
-PRIMARY = "#0f766e"
+PANEL = "#ffffff"
+PANEL_2 = "#fff7f7"
+RED = "#b91c1c"
+RED_DARK = "#991b1b"
+RED_LIGHT = "#fee2e2"
+RED_TEXT = "#7f1d1d"
+BORDER = "#d1d5db"
+TEXT = "#111827"
+SAVE_GREEN = "#22c55e"
+NOT_SAVE_ORANGE = "#f59e0b"
+BUTTON_WIDTH = 18
+FORM_LABEL_WIDTH = 18
 
 
 @dataclass
@@ -100,10 +111,10 @@ class SobelFineTuneApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.root = tk.Tk()
-        self.root.title("Sobel Fine Tune")
+        self.root.title("Fine Tune Image for Sobel Edge Detection")
         self.root.geometry("1500x860")
         self.root.minsize(1200, 760)
-        self.root.rowconfigure(3, weight=1)
+        self.root.rowconfigure(2, weight=1)
         self.root.configure(background=WINDOW_BG)
         if SOBEL_FINE_TUNE_ICON.exists():
             self.root.iconbitmap(str(SOBEL_FINE_TUNE_ICON))
@@ -113,6 +124,7 @@ class SobelFineTuneApp:
         self.current_image: np.ndarray | None = None
         self.photo_refs: list[tk.PhotoImage] = []
         self.saved_settings: dict[str, GuiTuneSettings] = {}
+        self.image_save_states: dict[str, str] = {}
         self.black_threshold = 55
 
         self.program_name_var = tk.StringVar(value=args.program_name)
@@ -123,6 +135,7 @@ class SobelFineTuneApp:
         self.status_var = tk.StringVar(
             value="Select input image path to begin. Actual selected part: none."
         )
+        self.save_state_var = tk.StringVar(value="Not Save")
         self.image_count_var = tk.StringVar(value="0 / 0")
 
         self.sobel_threshold_var = tk.DoubleVar(value=0.120)
@@ -146,88 +159,249 @@ class SobelFineTuneApp:
         style = ttk.Style(self.root)
         style.theme_use("clam")
         style.configure("TFrame", background=WINDOW_BG)
-        style.configure("TLabel", background=WINDOW_BG, foreground="#111827")
-        style.configure("TButton", padding=(10, 6), font=("Segoe UI", 10))
+        style.configure("TLabel", background=WINDOW_BG, foreground=TEXT)
+        style.configure(
+            "TButton",
+            padding=(10, 7),
+            font=("Segoe UI", 10),
+            background=PANEL,
+            foreground=RED_TEXT,
+            borderwidth=1,
+            relief="solid",
+        )
+        style.map(
+            "TButton",
+            background=[("active", RED_LIGHT), ("pressed", "#fecaca")],
+            foreground=[("active", RED_TEXT), ("pressed", RED_DARK)],
+        )
         style.configure(
             "Primary.TButton",
             padding=(10, 7),
             font=("Segoe UI", 10, "bold"),
-            background=PRIMARY,
+            background=RED,
             foreground="#ffffff",
+            borderwidth=1,
+            relief="solid",
         )
         style.map(
             "Primary.TButton",
-            background=[("active", "#0d9488"), ("pressed", "#115e59")],
+            background=[("active", RED_DARK), ("pressed", "#7f1d1d")],
             foreground=[("disabled", "#d1d5db")],
         )
-        style.configure("TEntry", padding=5)
+        style.configure(
+            "TEntry",
+            padding=5,
+            fieldbackground=PANEL_2,
+            foreground=TEXT,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            borderwidth=1,
+            relief="solid",
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", RED), ("!focus", BORDER)],
+            lightcolor=[("focus", RED), ("!focus", BORDER)],
+            darkcolor=[("focus", RED), ("!focus", BORDER)],
+        )
         style.configure("Image.TLabel", background=IMAGE_BG, foreground="#ffffff")
+        style.configure(
+            "FineTune.TRadiobutton",
+            background=PANEL_2,
+            foreground=TEXT,
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "FineTune.TRadiobutton",
+            background=[("active", PANEL_2), ("selected", PANEL_2)],
+            foreground=[("active", RED_TEXT), ("selected", TEXT)],
+        )
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        toolbar = ttk.Frame(self.root, padding=(10, 8))
-        toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(2, weight=1)
+        header = tk.Frame(self.root, background=RED_DARK, padx=20, pady=14)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(
+            header,
+            text="Fine Tune Image for Sobel Edge Detection",
+            anchor="w",
+            font=("Segoe UI Semibold", 22),
+            foreground="#ffffff",
+            background=RED_DARK,
+        ).grid(row=0, column=0, sticky="ew")
+        status_area = tk.Frame(header, background=RED_DARK)
+        status_area.grid(row=0, column=1, sticky="e", padx=(20, 0))
+        self.save_state_canvas = tk.Canvas(
+            status_area,
+            width=16,
+            height=16,
+            background=RED_DARK,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.save_state_canvas.grid(row=0, column=0, sticky="e", padx=(0, 8))
+        self.save_state_dot = self.save_state_canvas.create_oval(
+            3,
+            3,
+            13,
+            13,
+            fill=NOT_SAVE_ORANGE,
+            outline="#ffffff",
+        )
+        tk.Label(
+            status_area,
+            textvariable=self.save_state_var,
+            anchor="e",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#ffffff",
+            background=RED_DARK,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 14))
+        tk.Label(
+            status_area,
+            textvariable=self.status_var,
+            anchor="e",
+            font=("Segoe UI", 10),
+            foreground="#fecaca",
+            background=RED_DARK,
+            wraplength=720,
+        ).grid(row=0, column=2, sticky="e")
 
-        ttk.Label(toolbar, text="Program name").grid(row=0, column=0, sticky="w")
-        ttk.Entry(toolbar, textvariable=self.program_name_var, width=28).grid(
+        form_panel = tk.Frame(
+            self.root,
+            background=PANEL,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=18,
+            pady=14,
+        )
+        form_panel.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 10))
+        form_panel.columnconfigure(1, weight=1)
+
+        tk.Label(
+            form_panel,
+            text="Program name",
+            width=FORM_LABEL_WIDTH,
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Entry(form_panel, textvariable=self.program_name_var, width=28).grid(
             row=0,
             column=1,
-            padx=(6, 14),
-        )
-        ttk.Label(toolbar, textvariable=self.status_var, wraplength=720).grid(
-            row=0, column=2, sticky="e"
+            sticky="w",
+            padx=(8, 0),
+            pady=(0, 8),
+            ipady=2,
         )
 
-        input_bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
-        input_bar.grid(row=1, column=0, sticky="ew")
-        input_bar.columnconfigure(1, weight=1)
-        ttk.Label(input_bar, text="Input image path").grid(row=0, column=0, sticky="w")
-        ttk.Entry(input_bar, textvariable=self.input_image_path_var).grid(
-            row=0,
+        tk.Label(
+            form_panel,
+            text="Input image path",
+            width=FORM_LABEL_WIDTH,
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+        ).grid(row=1, column=0, sticky="w", pady=(0, 8))
+        ttk.Entry(form_panel, textvariable=self.input_image_path_var).grid(
+            row=1,
             column=1,
             sticky="ew",
-            padx=(8, 6),
+            padx=(8, 8),
+            pady=(0, 8),
+            ipady=2,
         )
-        ttk.Button(input_bar, text="Image", command=self._select_input_image_file).grid(
-            row=0, column=2, padx=(0, 6)
-        )
-        ttk.Button(input_bar, text="Folder", command=self._select_input_image_path).grid(
-            row=0, column=3
-        )
-
-        output_bar = ttk.Frame(self.root, padding=(10, 0, 10, 8))
-        output_bar.grid(row=2, column=0, sticky="ew")
-        output_bar.columnconfigure(1, weight=1)
-        ttk.Label(output_bar, text="Output image path").grid(row=0, column=0, sticky="w")
-        ttk.Entry(output_bar, textvariable=self.output_image_dir_var).grid(
-            row=0,
-            column=1,
-            sticky="ew",
-            padx=(8, 6),
-        )
-        ttk.Button(output_bar, text="Browse", command=self._select_output_image_dir).grid(
-            row=0,
+        ttk.Button(
+            form_panel,
+            text="Image",
+            command=self._select_input_image_file,
+            width=10,
+        ).grid(
+            row=1,
             column=2,
+            padx=(0, 6),
+            pady=(0, 8),
+        )
+        ttk.Button(
+            form_panel,
+            text="Folder",
+            command=self._select_input_image_path,
+            width=10,
+        ).grid(
+            row=1,
+            column=3,
+            pady=(0, 8),
         )
 
-        main = ttk.Frame(self.root, padding=(10, 0, 10, 10))
-        main.grid(row=3, column=0, sticky="nsew")
+        tk.Label(
+            form_panel,
+            text="Output image path",
+            width=FORM_LABEL_WIDTH,
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Entry(form_panel, textvariable=self.output_image_dir_var).grid(
+            row=2,
+            column=1,
+            sticky="ew",
+            padx=(8, 8),
+            ipady=2,
+        )
+        ttk.Button(
+            form_panel,
+            text="Browse",
+            command=self._select_output_image_dir,
+            width=10,
+        ).grid(
+            row=2,
+            column=2,
+            columnspan=2,
+            sticky="ew",
+        )
+
+        main = tk.Frame(
+            self.root,
+            background=PANEL,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=12,
+            pady=12,
+        )
+        main.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
         main.columnconfigure(0, weight=1)
         main.columnconfigure(1, weight=1)
         main.columnconfigure(2, weight=0)
         main.rowconfigure(1, weight=1)
 
-        ttk.Label(main, text="Original Image", font=("Segoe UI", 12, "bold")).grid(
+        tk.Label(
+            main,
+            text="Original Image",
+            font=("Segoe UI", 12, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+            anchor="center",
+        ).grid(
             row=0,
             column=0,
-            sticky="w",
+            sticky="ew",
             pady=(0, 6),
         )
-        ttk.Label(main, text="Sobel Edge Detection", font=("Segoe UI", 12, "bold")).grid(
+        tk.Label(
+            main,
+            text="Sobel Edge Detection",
+            font=("Segoe UI", 12, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+            anchor="center",
+        ).grid(
             row=0,
             column=1,
-            sticky="w",
+            sticky="ew",
             pady=(0, 6),
         )
         self.original_label = ttk.Label(main, anchor="center", style="Image.TLabel")
@@ -235,10 +409,23 @@ class SobelFineTuneApp:
         self.sobel_label = ttk.Label(main, anchor="center", style="Image.TLabel")
         self.sobel_label.grid(row=1, column=1, sticky="nsew", padx=(0, 8))
 
-        controls = ttk.Frame(main, padding=(12, 0, 0, 0))
+        controls = tk.Frame(
+            main,
+            background=PANEL_2,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=12,
+            pady=12,
+        )
         controls.grid(row=1, column=2, sticky="ns")
         controls.columnconfigure(0, weight=1)
-        ttk.Label(controls, text="Fine Tune Controls", font=("Segoe UI", 12, "bold")).grid(
+        tk.Label(
+            controls,
+            text="Fine Tune Controls",
+            font=("Segoe UI", 12, "bold"),
+            foreground=RED_TEXT,
+            background=PANEL_2,
+        ).grid(
             row=0,
             column=0,
             sticky="w",
@@ -287,9 +474,16 @@ class SobelFineTuneApp:
             5,
         )
 
-        view_frame = ttk.Frame(controls)
+        view_frame = tk.Frame(controls, background=PANEL_2)
         view_frame.grid(row=row, column=0, sticky="ew", pady=(4, 10))
-        ttk.Label(view_frame, text="Edge View").grid(row=0, column=0, sticky="w")
+        tk.Label(
+            view_frame,
+            text="Edge View",
+            anchor="w",
+            foreground=TEXT,
+            background=PANEL_2,
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
         for value, text in ((0, "Auto"), (1, "X Edge"), (2, "Y Edge"), (3, "All Edges")):
             ttk.Radiobutton(
                 view_frame,
@@ -297,10 +491,11 @@ class SobelFineTuneApp:
                 value=value,
                 variable=self.view_mode_var,
                 command=self._render_current,
+                style="FineTune.TRadiobutton",
             ).grid(row=value + 1, column=0, sticky="w")
         row += 1
 
-        button_frame = ttk.Frame(controls)
+        button_frame = tk.Frame(controls, background=PANEL_2)
         button_frame.grid(row=row, column=0, sticky="ew", pady=(14, 0))
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
@@ -309,19 +504,25 @@ class SobelFineTuneApp:
             text="Save This Image",
             command=self._save_current,
             style="Primary.TButton",
+            width=BUTTON_WIDTH,
         ).grid(
             row=0,
             column=0,
             sticky="ew",
             padx=(0, 6),
         )
-        ttk.Button(button_frame, text="Cancel This Image", command=self._cancel_current).grid(
+        ttk.Button(
+            button_frame,
+            text="Cancel This Image",
+            command=self._cancel_current,
+            width=BUTTON_WIDTH,
+        ).grid(
             row=0,
             column=1,
             sticky="ew",
         )
 
-        navigation_frame = ttk.Frame(controls)
+        navigation_frame = tk.Frame(controls, background=PANEL_2)
         navigation_frame.grid(row=row + 1, column=0, sticky="ew", pady=(10, 0))
         navigation_frame.columnconfigure(0, weight=1)
         navigation_frame.columnconfigure(1, weight=1)
@@ -329,33 +530,51 @@ class SobelFineTuneApp:
             navigation_frame,
             text="Previous Image",
             command=self._previous_image,
+            width=BUTTON_WIDTH,
         ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(
             navigation_frame,
             text="Next Image",
             command=self._next_image,
+            width=BUTTON_WIDTH,
         ).grid(row=0, column=1, sticky="ew")
-        ttk.Label(
+        tk.Label(
             navigation_frame,
             textvariable=self.image_count_var,
             anchor="center",
-        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            foreground=TEXT,
+            background=PANEL_2,
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(18, 0))
 
     def _add_slider(
         self,
-        parent: ttk.Frame,
+        parent: tk.Widget,
         row: int,
         label: str,
         variable: tk.Variable,
         from_: float,
         to: float,
     ) -> int:
-        frame = ttk.Frame(parent)
+        frame = tk.Frame(parent, background=PANEL_2)
         frame.grid(row=row, column=0, sticky="ew", pady=(0, 9))
         frame.columnconfigure(0, weight=1)
-        value_label = ttk.Label(frame, width=10, anchor="e")
+        value_label = tk.Label(
+            frame,
+            width=10,
+            anchor="e",
+            foreground=TEXT,
+            background=PANEL_2,
+            font=("Segoe UI", 10),
+        )
         value_label.grid(row=0, column=1, sticky="e")
-        ttk.Label(frame, text=label).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            frame,
+            text=label,
+            foreground=TEXT,
+            background=PANEL_2,
+            font=("Segoe UI", 10),
+        ).grid(row=0, column=0, sticky="w")
         scale = ttk.Scale(
             frame,
             variable=variable,
@@ -459,8 +678,9 @@ class SobelFineTuneApp:
         self.current_image = image
         self._apply_settings(self.saved_settings.get(str(image_path), GuiTuneSettings()))
         self.image_count_var.set(f"{self.image_index + 1} / {len(self.image_paths)}")
-        self.status_var.set(
-            f"Actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}"
+        self._set_status(
+            f"Actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}",
+            self._save_state_for_image(image_path),
         )
         self._render_current()
 
@@ -548,26 +768,46 @@ class SobelFineTuneApp:
                 sample_image=image_path,
             )
             self.saved_settings[str(image_path)] = settings
+            self.image_save_states[str(image_path)] = "Save"
             self._write_session_index(program_name)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Save Error", str(exc))
             self.status_var.set(f"Save failed: {image_path.name}")
             return
 
-        self.status_var.set(
-            f"Saved actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}"
+        self._set_status(
+            f"Saved actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}",
+            "Save",
         )
 
     def _cancel_current(self) -> None:
         image_path = self._current_path()
         if image_path is None:
             return
+        self.image_save_states[str(image_path)] = "Not Save"
         settings = self.saved_settings.get(str(image_path), GuiTuneSettings())
         self._apply_settings(settings)
         self._render_current()
-        self.status_var.set(
-            f"Canceled actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}"
+        self._set_status(
+            f"Not Save actual selected part: {self.image_index + 1} / {len(self.image_paths)} - {image_path.name}",
+            "Not Save",
         )
+
+    def _save_state_for_image(self, image_path: Path) -> str:
+        return self.image_save_states.get(
+            str(image_path),
+            "Save" if str(image_path) in self.saved_settings else "Not Save",
+        )
+
+    def _set_status(self, message: str, save_state: str | None = None) -> None:
+        self.status_var.set(message)
+        if save_state is None:
+            return
+        normalized = "Save" if save_state == "Save" else "Not Save"
+        self.save_state_var.set(normalized)
+        color = SAVE_GREEN if normalized == "Save" else NOT_SAVE_ORANGE
+        if hasattr(self, "save_state_canvas"):
+            self.save_state_canvas.itemconfigure(self.save_state_dot, fill=color)
 
     def _write_session_index(self, program_name: str) -> None:
         session_dir = self.args.recipe_dir
