@@ -9,9 +9,13 @@ YOLO IMAGE CLASSIFICATION
 
    Export JSON from label-studio
 
-3. To prepare the dataset and start training, double-click:
+3. To prepare the dataset and start training, run:
 
-   Train_model.bat
+   python image_classification\prepare_dataset.py
+   python image_classification\train.py
+
+   The dataset folder is generated from the newest JSON export and can be
+   deleted safely when you want to clean old training input.
 
 4. Check that both classes exist:
 
@@ -24,6 +28,9 @@ Training output:
 
    runs\pass_ng_classifier\weights\best.pt
 
+Only best.pt is required by the realtime dashboard. Other training reports,
+batch preview images, and last.pt can be deleted safely.
+
 PREDICTION
 ==========
 
@@ -31,9 +38,11 @@ PREDICTION
 
    predict_images
 
-2. Double-click:
+   Create this folder when you need folder-based testing.
 
-   Predict_model.bat
+2. Run:
+
+   python image_classification\predict.py
 
 3. Review:
 
@@ -43,9 +52,7 @@ PREDICTION
 REAL-TIME UI
 ============
 
-Double-click:
-
-   Realtime_UI.bat
+Open the unified Aurotek Edge UI and choose Realtime Dashboard.
 
 The UI watches Input_files\Picture, converts each new image to Sobel edges,
 classifies it as PASS or NG, and displays the confidence.

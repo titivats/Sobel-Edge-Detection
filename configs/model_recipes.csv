@@ -1,0 +1,2 @@
+model_name,program_name,pixels_per_mm,black_threshold,min_span,baseline_percentile,sobel_threshold_ratio,display_edge_thickness,roi_margin,orientation,black_edge_search_radius,focus_x_min_ratio,focus_x_max_ratio,focus_y_min_ratio,focus_y_max_ratio,enabled,notes
+DEFAULT_TRIAL,,1,55,30,10.0,0.12,2,60,auto,18,0.20,0.85,0.15,0.85,true,Trial recipe. Replace pixels_per_mm with real calibration.

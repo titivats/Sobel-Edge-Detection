@@ -1,2 +1,0 @@
-program_name,recipe_file,updated_at,black_threshold,sobel_threshold_ratio,edge_close_kernel,edge_close_iterations,edge_dilate_iterations,display_edge_thickness,inspection_x_min_ratio,inspection_x_max_ratio,inspection_y_min_ratio,inspection_y_max_ratio,sample_image
-MANUAL_TUNED,MANUAL_TUNED.json,2026-06-24 22:33:24,55,0.094,1,0,0,1,0.0000,1.0000,0.0000,1.0000,E:\AIProject\Sobel-Edge-Detection-github\Input_files\Picture\20260619_082849.bmp

@@ -21,8 +21,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    train_classes = {path.name for path in (DATASET / "train").iterdir() if path.is_dir()}
-    validation_classes = {path.name for path in (DATASET / "val").iterdir() if path.is_dir()}
+    train_dir = DATASET / "train"
+    validation_dir = DATASET / "val"
+    if not train_dir.is_dir() or not validation_dir.is_dir():
+        raise RuntimeError(
+            "Training dataset not found. Run python image_classification\\prepare_dataset.py "
+            "after exporting Label Studio JSON."
+        )
+    train_classes = {path.name for path in train_dir.iterdir() if path.is_dir()}
+    validation_classes = {path.name for path in validation_dir.iterdir() if path.is_dir()}
     classes = train_classes & validation_classes
 
     if len(classes) < 2:
@@ -30,13 +37,13 @@ def main() -> int:
             "Training requires at least two classes in both dataset/train and dataset/val. "
             f"Found: {', '.join(sorted(classes)) or 'none'}. "
             "Label both PASS and NG images in Label Studio, export JSON, and run "
-            "Train_model.bat again."
+            "python image_classification\\prepare_dataset.py before training again."
         )
 
     if not torch.cuda.is_available():
         raise RuntimeError(
             "CUDA GPU is required, but CUDA-enabled PyTorch is not available. "
-            "Run scripts\\install_gpu_torch.ps1, then try Train_model.bat again."
+            "Run scripts\\install_gpu_torch.ps1, then try python image_classification\\train.py again."
         )
 
     print(f"Training device: CUDA GPU 0 ({torch.cuda.get_device_name(0)})")

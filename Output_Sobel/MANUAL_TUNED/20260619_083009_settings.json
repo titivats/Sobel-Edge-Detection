@@ -1,0 +1,14 @@
+{
+  "program_name": "MANUAL_TUNED",
+  "image": "E:\\AI_Project\\edge_detection\\Input_files\\Picture\\20260619_083009.bmp",
+  "saved_at": "2026-06-25 09:24:41",
+  "settings": {
+    "sobel_threshold_ratio": 0.07575757575757576,
+    "black_threshold": 55,
+    "display_thickness": 1,
+    "edge_close_kernel": 1,
+    "edge_close_iterations": 0,
+    "edge_dilate_iterations": 0,
+    "view_mode": 3
+  }
+}

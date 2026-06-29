@@ -1,6 +1,5 @@
 __pycache__/
 *.py[cod]
-*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -10,21 +9,7 @@ venv/
 
 outputs/
 outputs_intrusion/
-Output_files/
-Output_Sobel/
+outputs_intrusion_sobel/
 SepData/
 
 *.log
-
-build/
-apps/
-finetune/
-*.spec
-*.exe
-
-image_classification/dataset/
-image_classification/runs/
-image_classification/predict_images/
-image_classification/prediction_results/
-*-cls.pt
-settings/realtime.json
