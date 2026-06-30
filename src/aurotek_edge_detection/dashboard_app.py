@@ -40,7 +40,25 @@ from .image_classifier import YoloImageClassifier
 from .sobel_edge_detection import create_sobel_edge_masks, thicken_edge_for_display
 
 
-FINETUNE_PREVIEW_SIZE = (700, 560)
+FINETUNE_PREVIEW_SIZE = (670, 560)
+FINETUNE_CARD_BG = "#f8fafc"
+FINETUNE_PREVIEW_FRAME_BG = "#111827"
+FINETUNE_PREVIEW_IMAGE_BG = "#000000"
+FINETUNE_PREVIEW_BORDER = "#334155"
+FINETUNE_OPTION_VALUES = ("Combined", "Sobel X", "Sobel Y")
+FINETUNE_PARAMETER_HELP = {
+    "Edge Mode": "Combined, X, or Y edge view.",
+    "Sobel Threshold": "Higher = fewer, stronger edges.",
+    "Blur Kernel": "Smooth noise before edge detect.",
+    "Sobel Kernel": "Larger = broader edge response.",
+    "Cleanup Kernel": "Close small gaps in edges.",
+    "Display Thickness": "Preview/save line thickness.",
+}
+DASHBOARD_POINT_PREVIEW_SIZE = (330, 230)
+DASHBOARD_POINT_DETAIL_WRAP = 660
+DASHBOARD_STARTUP_DELAY_MS = 5000
+DASHBOARD_REFRESH_MS = 2500
+DASHBOARD_UNMATCHED_SESSION = "__unmatched_product_info__"
 
 
 class AurotekEdgeDashboard:
@@ -66,16 +84,35 @@ class AurotekEdgeDashboard:
         self.annotated_var = tk.StringVar(value="Annotated images: -")
         self.finetune_count_var = tk.StringVar(value="0 / 0")
         self.finetune_state_var = tk.StringVar(value="Not Save")
+        self.display_thickness_var = tk.StringVar(value="2")
+        self.blur_kernel_var = tk.StringVar(value="5")
+        self.sobel_kernel_var = tk.StringVar(value="3")
+        self.cleanup_kernel_var = tk.StringVar(value="3")
+        self.edge_mode_var = tk.StringVar(value="Combined")
         self.dashboard_total_var = tk.StringVar(value="0")
         self.dashboard_pass_var = tk.StringVar(value="0")
         self.dashboard_ng_var = tk.StringVar(value="0")
         self.dashboard_unknown_var = tk.StringVar(value="0")
+        self.dashboard_boards_var = tk.StringVar(value="0")
         self.dashboard_update_var = tk.StringVar(value="Last update: -")
+        self.dashboard_search_var = tk.StringVar(value="")
+        self.dashboard_session_summary_var = tk.StringVar(value="Session: -")
 
         self.is_running = False
         self.status_dot: int | None = None
         self.status_canvas: tk.Canvas | None = None
         self.result_card_photos: list[tuple[tk.PhotoImage, tk.PhotoImage]] = []
+        self.dashboard_sessions: list[dict[str, object]] = []
+        self.dashboard_filtered_sessions: list[dict[str, object]] = []
+        self.dashboard_selected_session_key = ""
+        self.dashboard_active_search_query = ""
+        self.dashboard_data_signature: tuple[int, int, int] | None = None
+        self.dashboard_refresh_after_id: str | None = None
+        self.dashboard_finding = False
+        self.dashboard_spinner_after_id: str | None = None
+        self.dashboard_spinner_angle = 0
+        self.csv_row_cache: dict[Path, tuple[int, list[dict[str, str]]]] = {}
+        self.classification_cache: dict[tuple[Path, int, Path, int], tuple[str, float | None]] = {}
         self.finetune_images: list[Path] = []
         self.finetune_index = 0
         self.finetune_current_image = None
@@ -126,15 +163,26 @@ class AurotekEdgeDashboard:
             fill=ONLINE_GREEN,
             outline="#ffffff",
         )
+        status_text = tk.Frame(status, background=SIDEBAR)
+        status_text.pack(side="left")
         tk.Label(
-            status,
+            status_text,
             textvariable=self.status_var,
             anchor="e",
             font=("Segoe UI", 10, "bold"),
             foreground="#ffffff",
             background=SIDEBAR,
             wraplength=440,
-        ).pack(side="left")
+        ).pack(anchor="e")
+        tk.Label(
+            status_text,
+            textvariable=self.dashboard_update_var,
+            anchor="e",
+            font=("Segoe UI", 9),
+            foreground="#fecaca",
+            background=SIDEBAR,
+            wraplength=440,
+        ).pack(anchor="e", pady=(3, 0))
 
         self.notebook = ttk.Notebook(self.root, style="Dashboard.TNotebook")
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=14, pady=(12, 14))
@@ -149,7 +197,7 @@ class AurotekEdgeDashboard:
         self._build_dashboard_tab()
         self._build_configuration_tab()
         self._build_finetune_tab()
-        self.root.after(250, self._refresh_dashboard_on_startup)
+        self.root.after(DASHBOARD_STARTUP_DELAY_MS, self._refresh_dashboard_on_startup)
 
     def _build_configuration_tab(self) -> None:
         config_panel = tk.Frame(
@@ -255,36 +303,114 @@ class AurotekEdgeDashboard:
             highlightthickness=1,
             highlightbackground=BORDER,
             padx=16,
-            pady=14,
+            pady=16,
         )
         summary_panel.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         summary_panel.columnconfigure(0, weight=1)
 
         title_block = tk.Frame(summary_panel, background=PANEL)
-        title_block.grid(row=0, column=0, sticky="w")
+        title_block.grid(row=0, column=0, sticky="nw")
         tk.Label(
             title_block,
             text="Production Inspection Overview",
             anchor="w",
-            font=("Segoe UI Semibold", 18),
+            font=("Segoe UI Semibold", 16),
             foreground=TEXT,
             background=PANEL,
         ).pack(anchor="w")
-        tk.Label(
-            title_block,
-            textvariable=self.dashboard_update_var,
-            anchor="w",
-            font=("Segoe UI", 10),
-            foreground=MUTED,
-            background=PANEL,
-        ).pack(anchor="w", pady=(3, 0))
 
         kpi_row = tk.Frame(summary_panel, background=PANEL)
-        kpi_row.grid(row=0, column=1, sticky="e")
-        self._add_kpi_card(kpi_row, "TOTAL", self.dashboard_total_var, TEXT)
+        kpi_row.grid(row=0, column=1, rowspan=2, sticky="ne")
+        self._add_kpi_card(kpi_row, "POINTS", self.dashboard_total_var, TEXT)
+        self._add_kpi_card(kpi_row, "BOARDS", self.dashboard_boards_var, ACCENT_DARK)
         self._add_kpi_card(kpi_row, "PASS", self.dashboard_pass_var, ONLINE_GREEN)
         self._add_kpi_card(kpi_row, "NG", self.dashboard_ng_var, ALERT_RED)
         self._add_kpi_card(kpi_row, "UNKNOWN", self.dashboard_unknown_var, RUNNING_ORANGE)
+
+        search_panel = tk.Frame(summary_panel, background=PANEL)
+        search_panel.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        search_panel.columnconfigure(0, weight=1)
+
+        search_controls = tk.Frame(search_panel, background=PANEL)
+        search_controls.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            search_controls,
+            text="Search SN",
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            foreground=TEXT,
+            background=PANEL,
+        ).pack(side="left", padx=(0, 12))
+        tk.Entry(
+            search_controls,
+            textvariable=self.dashboard_search_var,
+            background=FINETUNE_CARD_BG,
+            foreground=TEXT,
+            insertbackground=TEXT,
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 10),
+            width=34,
+        ).pack(side="left", ipady=3)
+        tk.Button(
+            search_controls,
+            text="Find",
+            command=self._find_dashboard_search,
+            background=ACCENT,
+            foreground="#ffffff",
+            activebackground=ACCENT_DARK,
+            activeforeground="#ffffff",
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            search_controls,
+            text="Clear",
+            command=self._clear_dashboard_search,
+            background=PANEL,
+            foreground=ACCENT_DARK,
+            activebackground="#e5e7eb",
+            activeforeground=ACCENT_DARK,
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=3,
+        ).pack(side="left", padx=(8, 0))
+        self.dashboard_spinner_canvas = tk.Canvas(
+            search_controls,
+            width=24,
+            height=24,
+            background=PANEL,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.dashboard_spinner_arc = self.dashboard_spinner_canvas.create_arc(
+            4,
+            4,
+            20,
+            20,
+            start=0,
+            extent=270,
+            style="arc",
+            width=3,
+            outline=ACCENT,
+            state="hidden",
+        )
+        self.dashboard_spinner_canvas.pack(side="left", padx=(8, 0))
+        tk.Label(
+            search_panel,
+            textvariable=self.dashboard_session_summary_var,
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 8),
+            foreground=MUTED,
+            background=PANEL,
+            wraplength=1200,
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
         result_panel = tk.Frame(
             body,
@@ -297,6 +423,7 @@ class AurotekEdgeDashboard:
         result_panel.grid(row=1, column=0, sticky="nsew")
         result_panel.columnconfigure(0, weight=1)
         result_panel.rowconfigure(0, weight=1)
+
         self.cards_view = tk.Frame(result_panel, background=PANEL)
         self.cards_view.grid(row=0, column=0, sticky="nsew")
         self.cards_view.columnconfigure(0, weight=1)
@@ -405,7 +532,7 @@ class AurotekEdgeDashboard:
         preview_header.columnconfigure(0, weight=1)
         tk.Label(
             preview_header,
-            text="Fine-Tune Model / Sobel Edge Detection",
+            text="Fine-Tune Model | Sobel Edge Detection",
             anchor="w",
             font=("Segoe UI Semibold", 18),
             foreground=ACCENT_DARK,
@@ -436,8 +563,6 @@ class AurotekEdgeDashboard:
             "Sobel Edge Detection",
         )
 
-        self.display_thickness_var = tk.StringVar(value="2")
-
         parameter_panel = tk.Frame(
             self.finetune_tab,
             background=PANEL,
@@ -462,7 +587,7 @@ class AurotekEdgeDashboard:
 
         state_content = tk.Frame(
             parameter_panel,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
             padx=12,
@@ -470,7 +595,7 @@ class AurotekEdgeDashboard:
         )
         state_content.grid(row=1, column=0, sticky="ew", pady=(0, 14))
         self.finetune_state_canvas = tk.Canvas(
-            state_content, width=18, height=18, background=PANEL_2, highlightthickness=0
+            state_content, width=18, height=18, background=FINETUNE_CARD_BG, highlightthickness=0
         )
         self.finetune_state_canvas.pack(side="left", padx=(0, 8))
         self.finetune_state_dot = self.finetune_state_canvas.create_oval(
@@ -480,14 +605,14 @@ class AurotekEdgeDashboard:
             state_content,
             textvariable=self.finetune_state_var,
             foreground=TEXT,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             font=("Segoe UI", 11, "bold"),
         ).pack(side="left")
         tk.Label(
             state_content,
             textvariable=self.finetune_count_var,
             foreground=MUTED,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             font=("Segoe UI", 10),
             anchor="e",
             justify="right",
@@ -496,7 +621,7 @@ class AurotekEdgeDashboard:
 
         adjustment_panel = tk.Frame(
             parameter_panel,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
             padx=12,
@@ -504,53 +629,113 @@ class AurotekEdgeDashboard:
         )
         adjustment_panel.grid(row=2, column=0, sticky="ew", pady=(0, 14))
         adjustment_panel.columnconfigure(1, weight=1)
+        adjust_header = tk.Frame(adjustment_panel, background=FINETUNE_CARD_BG)
+        adjust_header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        adjust_header.columnconfigure(0, weight=1)
         tk.Label(
-            adjustment_panel,
+            adjust_header,
             text="Adjust",
             anchor="w",
             font=("Segoe UI Semibold", 12),
             foreground=ACCENT_DARK,
-            background=PANEL_2,
-        ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+            background=FINETUNE_CARD_BG,
+        ).grid(row=0, column=0, sticky="w")
+        tk.Button(
+            adjust_header,
+            text="Reset",
+            command=self._reset_finetune_parameters,
+            background=PANEL,
+            foreground=ACCENT_DARK,
+            activebackground="#e5e7eb",
+            activeforeground=ACCENT_DARK,
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=3,
+        ).grid(row=0, column=1, sticky="e")
+
+        self._add_finetune_option_row(
+            adjustment_panel,
+            1,
+            "Edge Mode",
+            self.edge_mode_var,
+            FINETUNE_OPTION_VALUES,
+            FINETUNE_PARAMETER_HELP["Edge Mode"],
+        )
 
         self._add_finetune_slider_row(
             adjustment_panel,
-            1,
+            2,
             "Sobel Threshold",
             self.sobel_threshold_var,
             0.01,
             0.50,
             0.01,
+            FINETUNE_PARAMETER_HELP["Sobel Threshold"],
         )
         self._add_finetune_slider_row(
             adjustment_panel,
+            3,
+            "Blur Kernel",
+            self.blur_kernel_var,
+            1,
+            15,
             2,
+            FINETUNE_PARAMETER_HELP["Blur Kernel"],
+        )
+        self._add_finetune_slider_row(
+            adjustment_panel,
+            4,
+            "Sobel Kernel",
+            self.sobel_kernel_var,
+            1,
+            7,
+            2,
+            FINETUNE_PARAMETER_HELP["Sobel Kernel"],
+        )
+        self._add_finetune_slider_row(
+            adjustment_panel,
+            5,
+            "Cleanup Kernel",
+            self.cleanup_kernel_var,
+            1,
+            9,
+            2,
+            FINETUNE_PARAMETER_HELP["Cleanup Kernel"],
+        )
+        self._add_finetune_slider_row(
+            adjustment_panel,
+            6,
             "Display Thickness",
             self.display_thickness_var,
             1,
             8,
             1,
+            FINETUNE_PARAMETER_HELP["Display Thickness"],
         )
 
         image_actions = tk.Frame(
             parameter_panel,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
-            padx=12,
-            pady=12,
+            padx=10,
+            pady=6,
         )
         image_actions.grid(row=3, column=0, sticky="ew", pady=(0, 14))
+        image_actions.grid_propagate(False)
+        image_actions.configure(height=112)
         image_actions.columnconfigure(0, weight=1, uniform="finetune_actions")
         image_actions.columnconfigure(1, weight=1, uniform="finetune_actions")
         tk.Label(
             image_actions,
             text="Images",
             anchor="w",
-            font=("Segoe UI Semibold", 12),
+            font=("Segoe UI Semibold", 11),
             foreground=ACCENT_DARK,
-            background=PANEL_2,
-        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+            background=FINETUNE_CARD_BG,
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         self._add_finetune_button(
             image_actions,
             "Load Images",
@@ -584,23 +769,25 @@ class AurotekEdgeDashboard:
 
         decision_actions = tk.Frame(
             parameter_panel,
-            background=PANEL_2,
+            background=FINETUNE_CARD_BG,
             highlightthickness=1,
             highlightbackground=BORDER,
-            padx=12,
-            pady=12,
+            padx=10,
+            pady=6,
         )
         decision_actions.grid(row=4, column=0, sticky="ew")
+        decision_actions.grid_propagate(False)
+        decision_actions.configure(height=72)
         decision_actions.columnconfigure(0, weight=1, uniform="finetune_actions")
         decision_actions.columnconfigure(1, weight=1, uniform="finetune_actions")
         tk.Label(
             decision_actions,
             text="Decision",
             anchor="w",
-            font=("Segoe UI Semibold", 12),
+            font=("Segoe UI Semibold", 11),
             foreground=ACCENT_DARK,
-            background=PANEL_2,
-        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+            background=FINETUNE_CARD_BG,
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         self._add_finetune_button(
             decision_actions,
             "Save",
@@ -628,7 +815,14 @@ class AurotekEdgeDashboard:
         column: int,
         title: str,
     ) -> tk.Label:
-        panel = tk.Frame(parent, background="#111827", padx=10, pady=10)
+        panel = tk.Frame(
+            parent,
+            background=FINETUNE_PREVIEW_FRAME_BG,
+            highlightthickness=1,
+            highlightbackground=FINETUNE_PREVIEW_BORDER,
+            padx=10,
+            pady=10,
+        )
         panel.grid(
             row=0,
             column=column,
@@ -640,14 +834,15 @@ class AurotekEdgeDashboard:
         tk.Label(
             panel,
             text=title,
-            anchor="w",
-            font=("Segoe UI", 10, "bold"),
-            foreground=HEADER_MUTED,
-            background="#111827",
+            anchor="center",
+            justify="center",
+            font=("Segoe UI Semibold", 10),
+            foreground="#f8fafc",
+            background=FINETUNE_PREVIEW_FRAME_BG,
         ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         image_slot = tk.Frame(
             panel,
-            background="#0f172a",
+            background=FINETUNE_PREVIEW_IMAGE_BG,
             width=FINETUNE_PREVIEW_SIZE[0],
             height=FINETUNE_PREVIEW_SIZE[1],
         )
@@ -661,7 +856,7 @@ class AurotekEdgeDashboard:
             anchor="center",
             font=("Segoe UI", 12, "bold"),
             foreground="#ffffff",
-            background="#0f172a",
+            background=FINETUNE_PREVIEW_IMAGE_BG,
             compound="center",
         )
         image_label.grid(row=0, column=0, sticky="nsew")
@@ -694,15 +889,15 @@ class AurotekEdgeDashboard:
             activeforeground="#ffffff" if foreground == "#ffffff" else ACCENT_DARK,
             relief="solid",
             borderwidth=1,
-            font=("Segoe UI", 11, "bold" if foreground == "#ffffff" else "normal"),
-            pady=9,
+            font=("Segoe UI", 9, "bold" if foreground == "#ffffff" else "normal"),
+            pady=3,
         ).grid(
             row=row,
             column=column,
             columnspan=span,
             sticky="ew",
             padx=padx,
-            pady=(0, 8),
+            pady=(0, 2),
         )
 
     def _add_path_row(
@@ -838,8 +1033,11 @@ class AurotekEdgeDashboard:
         from_value: float,
         to_value: float,
         resolution: float,
+        description: str,
     ) -> None:
         background = str(parent.cget("background"))
+        control_row = row * 2 - 1
+        description_row = control_row + 1
         tk.Label(
             parent,
             text=label,
@@ -847,7 +1045,7 @@ class AurotekEdgeDashboard:
             font=("Segoe UI", 10, "bold"),
             foreground=TEXT,
             background=background,
-        ).grid(row=row, column=0, sticky="w", pady=(0, 14))
+        ).grid(row=control_row, column=0, sticky="w", pady=(0, 2))
         tk.Scale(
             parent,
             from_=from_value,
@@ -861,7 +1059,7 @@ class AurotekEdgeDashboard:
             troughcolor="#e5e7eb",
             activebackground=ACCENT,
             showvalue=False,
-        ).grid(row=row, column=1, sticky="ew", padx=(12, 10), pady=(0, 14))
+        ).grid(row=control_row, column=1, sticky="ew", padx=(12, 10), pady=(0, 2))
         entry = tk.Entry(
             parent,
             textvariable=variable,
@@ -871,12 +1069,74 @@ class AurotekEdgeDashboard:
             relief="solid",
             borderwidth=1,
             font=("Consolas", 11),
-            width=8,
+            width=5,
             justify="center",
         )
-        entry.grid(row=row, column=2, sticky="ew", pady=(0, 14), ipady=7)
+        entry.grid(row=control_row, column=2, sticky="e", pady=(0, 2), ipady=7)
         entry.bind("<Return>", lambda _event: self._commit_finetune_parameters())
         entry.bind("<FocusOut>", lambda _event: self._commit_finetune_parameters(show_error=False))
+        tk.Label(
+            parent,
+            text=description,
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 8),
+            foreground=MUTED,
+            background=background,
+            wraplength=300,
+        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+
+    def _add_finetune_option_row(
+        self,
+        parent: tk.Widget,
+        row: int,
+        label: str,
+        variable: tk.StringVar,
+        values: tuple[str, ...],
+        description: str,
+    ) -> None:
+        background = str(parent.cget("background"))
+        control_row = row * 2 - 1
+        description_row = control_row + 1
+        tk.Label(
+            parent,
+            text=label,
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+            foreground=TEXT,
+            background=background,
+        ).grid(row=control_row, column=0, sticky="w", pady=(0, 2))
+        combobox = ttk.Combobox(
+            parent,
+            textvariable=variable,
+            values=values,
+            state="readonly",
+            font=("Segoe UI", 10),
+            justify="center",
+        )
+        combobox.grid(
+            row=control_row,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 0),
+            pady=(0, 2),
+            ipady=5,
+        )
+        combobox.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._commit_finetune_parameters(show_error=False),
+        )
+        tk.Label(
+            parent,
+            text=description,
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 8),
+            foreground=MUTED,
+            background=background,
+            wraplength=300,
+        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 5))
 
     def _browse_directory(self, variable: tk.StringVar) -> None:
         selected = filedialog.askdirectory(initialdir=variable.get() or str(PROJECT_ROOT))
@@ -990,29 +1250,275 @@ class AurotekEdgeDashboard:
     def _refresh_dashboard_on_startup(self) -> None:
         self._set_status("Loading production dashboard...", RUNNING_ORANGE)
         self._load_point_cards()
+        self._schedule_dashboard_refresh()
 
-    def _load_point_cards(self) -> None:
-        for child in self.cards_content.winfo_children():
-            child.destroy()
-        self.result_card_photos.clear()
+    def _load_point_cards(self, preserve_selection: bool = True) -> None:
+        self.dashboard_data_signature = self._dashboard_source_signature()
         csv_path = Path(self.output_var.get()).expanduser() / "intrusion_measurements.csv"
         if not csv_path.exists():
-            self._set_dashboard_counts(total=0, passed=0, failed=0, unknown=0)
+            self.dashboard_sessions = []
+            self.dashboard_filtered_sessions = []
+            self.dashboard_selected_session_key = ""
+            self._set_dashboard_counts(total=0, boards=0, passed=0, failed=0, unknown=0)
+            self.dashboard_session_summary_var.set("Session: -")
+            self._clear_dashboard_cards()
             self._show_dashboard_placeholder(
                 "No processed output found yet. Please check the Output path in Configuration."
             )
             self._set_status("Dashboard ready. No output found.", RUNNING_ORANGE)
             return
-        with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
-            rows = list(csv.DictReader(csv_file))
+
+        rows = self._read_csv_rows(csv_path)
+        self.dashboard_sessions = self._build_dashboard_sessions(rows)
+        if not self.dashboard_sessions:
+            self.dashboard_filtered_sessions = []
+            self.dashboard_selected_session_key = ""
+            self._set_dashboard_counts(total=0, boards=0, passed=0, failed=0, unknown=0)
+            self.dashboard_session_summary_var.set("Session: -")
+            self._clear_dashboard_cards()
+            self._show_dashboard_placeholder(
+                "Processed CSV was found, but no matching images/Sobel previews could be displayed."
+            )
+            self._set_status("Dashboard ready. No displayable images found.", RUNNING_ORANGE)
+            return
+
+        preferred_key = self.dashboard_selected_session_key if preserve_selection else ""
+        self._apply_dashboard_search(preferred_key=preferred_key)
+
+        if self.dashboard_filtered_sessions:
+            self._set_status("Production dashboard ready.", ONLINE_GREEN)
+        else:
+            self._set_status("Dashboard ready. No search results.", RUNNING_ORANGE)
+
+    def _schedule_dashboard_refresh(self) -> None:
+        if self.dashboard_refresh_after_id is not None:
+            self.root.after_cancel(self.dashboard_refresh_after_id)
+        self.dashboard_refresh_after_id = self.root.after(
+            DASHBOARD_REFRESH_MS,
+            self._poll_dashboard_updates,
+        )
+
+    def _poll_dashboard_updates(self) -> None:
+        self.dashboard_refresh_after_id = None
+        signature = self._dashboard_source_signature()
+        if signature != self.dashboard_data_signature:
+            self._load_point_cards(preserve_selection=True)
+        self._schedule_dashboard_refresh()
+
+    def _dashboard_source_signature(self) -> tuple[int, int, int]:
+        output_csv = Path(self.output_var.get()).expanduser() / "intrusion_measurements.csv"
+        output_mtime = self._file_mtime_ns(output_csv)
+        csv_dir = Path(self.csv_import_var.get()).expanduser()
+        latest_product_info_mtime = 0
+        product_info_count = 0
+        if csv_dir.exists():
+            for csv_path in csv_dir.rglob("*.csv"):
+                product_info_count += 1
+                latest_product_info_mtime = max(
+                    latest_product_info_mtime,
+                    self._file_mtime_ns(csv_path),
+                )
+        return output_mtime, latest_product_info_mtime, product_info_count
+
+    def _file_mtime_ns(self, path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def _build_dashboard_sessions(self, rows: list[dict[str, str]]) -> list[dict[str, object]]:
+        sessions_by_key: dict[str, dict[str, object]] = {}
+        for index, row in enumerate(rows, start=1):
+            image_value = self._clean_csv_value(row.get("image"))
+            if not image_value:
+                continue
+            image_path = Path(image_value)
+            csv_path, csv_rows = self._match_csv_for_image(image_path)
+            key = str(csv_path.resolve()) if csv_path else DASHBOARD_UNMATCHED_SESSION
+            if key not in sessions_by_key:
+                sessions_by_key[key] = self._new_dashboard_session(
+                    key=key,
+                    csv_path=csv_path,
+                    csv_rows=csv_rows,
+                    first_image_path=image_path,
+                )
+            points = sessions_by_key[key]["points"]
+            if isinstance(points, list):
+                points.append(
+                    {
+                        "source_index": index,
+                        "row": row,
+                        "image_path": image_path,
+                    }
+                )
+
+        sessions = list(sessions_by_key.values())
+        for session in sessions:
+            points = session.get("points")
+            if isinstance(points, list):
+                points.sort(
+                    key=lambda point: (
+                        timestamp_from_name(point["image_path"]) or datetime.min,
+                        point["source_index"],
+                    )
+                )
+            product_row = session.get("product_row")
+            point_count = len(points) if isinstance(points, list) else 0
+            session["point_count"] = point_count
+            session["board_count"] = self._session_board_count(product_row, point_count)
+            session["search_text"] = self._session_search_text(session)
+
+        return sorted(
+            sessions,
+            key=lambda session: (
+                session.get("end_time") or session.get("start_time") or datetime.min,
+                str(session.get("csv_path") or ""),
+            ),
+            reverse=True,
+        )
+
+    def _new_dashboard_session(
+        self,
+        key: str,
+        csv_path: Path | None,
+        csv_rows: list[dict[str, str]],
+        first_image_path: Path,
+    ) -> dict[str, object]:
+        product_row = self._primary_product_row(csv_rows)
+        start_time, end_time = self._session_time_range(csv_path, csv_rows, first_image_path)
+        return {
+            "key": key,
+            "csv_path": csv_path,
+            "csv_rows": csv_rows,
+            "product_row": product_row,
+            "start_time": start_time,
+            "end_time": end_time,
+            "points": [],
+            "point_count": 0,
+            "board_count": 0,
+            "search_text": "",
+        }
+
+    def _apply_dashboard_search(self, preferred_key: str = "") -> bool:
+        query = self.dashboard_active_search_query.lower()
+        if query:
+            filtered = [
+                session
+                for session in self.dashboard_sessions
+                if query in str(session.get("search_text") or "")
+            ]
+        else:
+            filtered = list(self.dashboard_sessions)
+
+        self.dashboard_filtered_sessions = filtered
+        if not filtered:
+            self.dashboard_selected_session_key = ""
+            self.dashboard_session_summary_var.set("Session: no matching SN")
+            self._set_dashboard_counts(total=0, boards=0, passed=0, failed=0, unknown=0)
+            self._clear_dashboard_cards()
+            self._show_dashboard_placeholder("No matching SN found.")
+            return False
+
+        available_keys = {str(session.get("key")) for session in filtered}
+        selected_key = preferred_key or self.dashboard_selected_session_key
+        if selected_key not in available_keys:
+            selected_key = str(filtered[0].get("key"))
+        return self._select_dashboard_session(selected_key)
+
+    def _select_dashboard_session(self, key: str) -> bool:
+        self.dashboard_selected_session_key = key
+        selected_session = None
+        for session in self.dashboard_filtered_sessions:
+            if str(session.get("key")) == key:
+                selected_session = session
+                break
+        if selected_session is None:
+            return False
+        self._render_dashboard_session(selected_session)
+        return True
+
+    def _clear_dashboard_search(self) -> None:
+        self.dashboard_search_var.set("")
+        self.dashboard_active_search_query = ""
+        self._apply_dashboard_search(preferred_key="")
+
+    def _find_dashboard_search(self) -> None:
+        if self.dashboard_finding:
+            return
+        self.dashboard_finding = True
+        self._set_status("Finding Product Info...", RUNNING_ORANGE)
+        self._show_dashboard_spinner()
+        self.root.after(100, self._perform_dashboard_find)
+
+    def _perform_dashboard_find(self) -> None:
+        found = False
+        try:
+            self.dashboard_active_search_query = self._clean_csv_value(
+                self.dashboard_search_var.get()
+            )
+            if not self.dashboard_sessions:
+                self._load_point_cards(preserve_selection=False)
+                found = bool(self.dashboard_filtered_sessions)
+            else:
+                found = self._apply_dashboard_search(preferred_key="")
+        finally:
+            self.dashboard_finding = False
+            self._hide_dashboard_spinner()
+
+        if found:
+            self._set_status("Finding complete.", ONLINE_GREEN)
+            messagebox.showinfo("Finding Complete", "Finding Complete")
+        else:
+            self._set_status("Finding incomplete.", RUNNING_ORANGE)
+            messagebox.showwarning("Finding Incomplete", "Finding Incomplete")
+
+    def _show_dashboard_spinner(self) -> None:
+        if not hasattr(self, "dashboard_spinner_canvas"):
+            return
+        self.dashboard_spinner_canvas.itemconfigure(self.dashboard_spinner_arc, state="normal")
+        self._animate_dashboard_spinner()
+
+    def _hide_dashboard_spinner(self) -> None:
+        if self.dashboard_spinner_after_id is not None:
+            self.root.after_cancel(self.dashboard_spinner_after_id)
+            self.dashboard_spinner_after_id = None
+        if hasattr(self, "dashboard_spinner_canvas"):
+            self.dashboard_spinner_canvas.itemconfigure(self.dashboard_spinner_arc, state="hidden")
+
+    def _animate_dashboard_spinner(self) -> None:
+        if not self.dashboard_finding or not hasattr(self, "dashboard_spinner_canvas"):
+            return
+        self.dashboard_spinner_angle = (self.dashboard_spinner_angle + 25) % 360
+        self.dashboard_spinner_canvas.itemconfigure(
+            self.dashboard_spinner_arc,
+            start=self.dashboard_spinner_angle,
+        )
+        self.dashboard_spinner_after_id = self.root.after(80, self._animate_dashboard_spinner)
+
+    def _render_dashboard_session(self, session: dict[str, object]) -> None:
+        self._clear_dashboard_cards()
+        self.dashboard_session_summary_var.set(self._session_summary_text(session))
+
         counts = {"PASS": 0, "NG": 0, "UNKNOWN": 0}
         rendered = 0
-        for index, row in enumerate(rows, start=1):
-            image_path = Path(row["image"])
+        points = session.get("points")
+        if not isinstance(points, list):
+            points = []
+        for point_number, point in enumerate(points, start=1):
+            image_path = point.get("image_path")
+            row = point.get("row")
+            if not isinstance(image_path, Path) or not isinstance(row, dict):
+                continue
             sobel_path = Path(self.output_var.get()).expanduser() / "sobel_edges" / (
                 f"{image_path.stem}_sobel_edge.png"
             )
-            classification = self._add_point_card(index, image_path, sobel_path, row)
+            classification = self._add_point_card(
+                point_number=point_number,
+                image_path=image_path,
+                sobel_path=sobel_path,
+                row=row,
+                session=session,
+            )
             if classification is None:
                 continue
             rendered += 1
@@ -1021,22 +1527,29 @@ class AurotekEdgeDashboard:
             else:
                 counts["UNKNOWN"] += 1
 
+        boards = int(session.get("board_count") or 0)
         self._set_dashboard_counts(
             total=rendered,
+            boards=boards,
             passed=counts["PASS"],
             failed=counts["NG"],
             unknown=counts["UNKNOWN"],
         )
         if rendered == 0:
             self._show_dashboard_placeholder(
-                "Processed CSV was found, but no matching images/Sobel previews could be displayed."
+                "This Product Info session has no displayable image/Sobel preview."
             )
-            self._set_status("Dashboard ready. No displayable images found.", RUNNING_ORANGE)
-        else:
-            self._set_status("Production dashboard ready.", ONLINE_GREEN)
 
-    def _set_dashboard_counts(self, total: int, passed: int, failed: int, unknown: int) -> None:
+    def _set_dashboard_counts(
+        self,
+        total: int,
+        boards: int,
+        passed: int,
+        failed: int,
+        unknown: int,
+    ) -> None:
         self.dashboard_total_var.set(str(total))
+        self.dashboard_boards_var.set(str(boards))
         self.dashboard_pass_var.set(str(passed))
         self.dashboard_ng_var.set(str(failed))
         self.dashboard_unknown_var.set(str(unknown))
@@ -1045,17 +1558,144 @@ class AurotekEdgeDashboard:
         )
 
     def _show_dashboard_placeholder(self, message: str) -> None:
-        tk.Label(
+        canvas_width = max(self.cards_canvas.winfo_width(), self.cards_view.winfo_width(), 900)
+        canvas_height = max(self.cards_canvas.winfo_height(), self.cards_view.winfo_height(), 420)
+        placeholder = tk.Frame(
             self.cards_content,
+            background=PANEL,
+            width=canvas_width,
+            height=canvas_height,
+        )
+        placeholder.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        placeholder.grid_propagate(False)
+        placeholder.columnconfigure(0, weight=1)
+        if message == "No matching SN found.":
+            placeholder.rowconfigure(0, weight=3)
+            placeholder.rowconfigure(2, weight=2)
+        else:
+            placeholder.rowconfigure(0, weight=1)
+            placeholder.rowconfigure(2, weight=1)
+        tk.Label(
+            placeholder,
             text=message,
             anchor="center",
             justify="center",
             foreground=MUTED,
             background=PANEL,
             font=("Segoe UI", 15, "bold"),
-            padx=30,
-            pady=80,
-        ).grid(row=0, column=0, sticky="nsew")
+        ).grid(row=1, column=0, sticky="ew")
+
+    def _clear_dashboard_cards(self) -> None:
+        for child in self.cards_content.winfo_children():
+            child.destroy()
+        self.result_card_photos.clear()
+
+    def _primary_product_row(self, csv_rows: list[dict[str, str]]) -> dict[str, str] | None:
+        for row in csv_rows:
+            if self._clean_csv_value(row.get("SN")):
+                return row
+        for row in csv_rows:
+            if self._clean_csv_value(row.get("ProductId")):
+                return row
+        return csv_rows[0] if csv_rows else None
+
+    def _session_board_count(self, product_row: object, fallback_count: int) -> int:
+        if isinstance(product_row, dict):
+            for field in ("SubBoardCount", "BoardCount", "PanelBoardCount"):
+                value = self._clean_csv_value(product_row.get(field))
+                if not value:
+                    continue
+                try:
+                    count = int(float(value))
+                except ValueError:
+                    continue
+                if count > 0:
+                    return count
+        return fallback_count
+
+    def _session_time_range(
+        self,
+        csv_path: Path | None,
+        csv_rows: list[dict[str, str]],
+        fallback_image_path: Path,
+    ) -> tuple[datetime | None, datetime | None]:
+        start_times: list[datetime] = []
+        end_times: list[datetime] = []
+        for row in csv_rows:
+            start_time = self._parse_csv_datetime(
+                row.get("Start_time") or row.get("StartTime") or row.get("Start") or row.get("Time")
+            )
+            end_time = self._parse_csv_datetime(
+                row.get("End_time") or row.get("EndTime") or row.get("End") or row.get("Time")
+            )
+            if start_time:
+                start_times.append(start_time)
+            if end_time:
+                end_times.append(end_time)
+
+        csv_time = timestamp_from_name(csv_path) if csv_path else None
+        image_time = timestamp_from_name(fallback_image_path)
+        start_time = min(start_times) if start_times else (csv_time or image_time)
+        end_time = max(end_times) if end_times else (csv_time or image_time)
+        return start_time, end_time
+
+    def _session_search_text(self, session: dict[str, object]) -> str:
+        product_row = session.get("product_row")
+        csv_path = session.get("csv_path")
+        fields = []
+        if isinstance(product_row, dict):
+            fields.extend(
+                self._clean_csv_value(product_row.get(field))
+                for field in (
+                    "SN",
+                    "ProductId",
+                    "CutedTable",
+                    "Recipe_Name",
+                    "ID",
+                    "Barcode",
+                    "FixtureBarcode",
+                    "MachineID",
+                )
+            )
+        if isinstance(csv_path, Path):
+            fields.append(csv_path.name)
+            fields.append(str(csv_path))
+        fields.append(self._format_session_time_range(session.get("start_time"), session.get("end_time")))
+        return " ".join(field for field in fields if field).lower()
+
+    def _session_summary_text(self, session: dict[str, object]) -> str:
+        product_row = session.get("product_row")
+        csv_path = session.get("csv_path")
+        csv_name = csv_path.name if isinstance(csv_path, Path) else "Unmatched CSV"
+        return (
+            f"Session: {csv_name} | "
+            f"SN: {self._product_field(product_row, 'SN') or '-'} | "
+            f"ProductId: {self._product_field(product_row, 'ProductId') or '-'} | "
+            f"Table: {self._product_field(product_row, 'CutedTable') or '-'} | "
+            f"Boards: {session.get('board_count') or 0} | "
+            f"Points: {session.get('point_count') or 0} | "
+            f"Time: {self._format_session_time_range(session.get('start_time'), session.get('end_time'))}"
+        )
+
+    def _product_field(self, product_row: object, field: str) -> str:
+        if not isinstance(product_row, dict):
+            return ""
+        return self._clean_csv_value(product_row.get(field))
+
+    def _format_session_time_range(
+        self,
+        start_time: object,
+        end_time: object,
+        compact: bool = False,
+    ) -> str:
+        if not isinstance(start_time, datetime) and not isinstance(end_time, datetime):
+            return "-"
+        date_format = "%H:%M:%S" if compact else "%Y-%m-%d %H:%M:%S"
+        start_text = start_time.strftime(date_format) if isinstance(start_time, datetime) else "-"
+        end_text = end_time.strftime(date_format) if isinstance(end_time, datetime) else "-"
+        if start_text == end_text:
+            return start_text
+        return f"{start_text} - {end_text}"
 
     def _add_point_card(
         self,
@@ -1063,15 +1703,20 @@ class AurotekEdgeDashboard:
         image_path: Path,
         sobel_path: Path,
         row: dict[str, str],
+        session: dict[str, object],
     ) -> str | None:
         original = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         sobel = cv2.imread(str(sobel_path), cv2.IMREAD_COLOR)
         if original is None or sobel is None:
             return None
-        original_photo = tk_image_from_bgr(original, (430, 300))
-        sobel_photo = tk_image_from_bgr(sobel, (430, 300))
+        original_photo = tk_image_from_bgr(original, DASHBOARD_POINT_PREVIEW_SIZE)
+        sobel_photo = tk_image_from_bgr(sobel, DASHBOARD_POINT_PREVIEW_SIZE)
         self.result_card_photos.append((original_photo, sobel_photo))
-        classification_detail, classification = self._classification_detail(image_path, sobel_path)
+        classification_detail, classification = self._classification_detail(
+            image_path,
+            sobel_path,
+            session,
+        )
 
         card = tk.Frame(
             self.cards_content,
@@ -1132,7 +1777,7 @@ class AurotekEdgeDashboard:
             foreground=TEXT,
             background=PANEL_2,
             font=("Segoe UI", 10),
-            wraplength=820,
+            wraplength=DASHBOARD_POINT_DETAIL_WRAP,
         ).pack(fill="x", pady=(10, 0))
         return classification
 
@@ -1155,27 +1800,31 @@ class AurotekEdgeDashboard:
         ).pack(fill="x", pady=(0, 6))
         tk.Label(panel, image=photo, background="#111827").pack()
 
-    def _classification_detail(self, image_path: Path, sobel_path: Path) -> tuple[str, str]:
+    def _classification_detail(
+        self,
+        image_path: Path,
+        sobel_path: Path,
+        session: dict[str, object],
+    ) -> tuple[str, str]:
         image_time = timestamp_from_name(image_path)
-        csv_path, csv_rows = self._match_csv_for_image(image_path)
-        csv_row = csv_rows[0] if csv_rows else None
-        classification, confidence = self._predict_classification(sobel_path)
-        csv_time = "-"
-        if csv_row:
-            csv_time = (
-                csv_row.get("End_time")
-                or csv_row.get("Start_time")
-                or csv_row.get("Time")
-                or "-"
-            )
+        csv_path = session.get("csv_path")
+        csv_rows = session.get("csv_rows")
+        if not isinstance(csv_rows, list):
+            csv_rows = []
+        classification, confidence = self._predict_classification_cached(sobel_path)
+        time_range = self._format_session_time_range(
+            session.get("start_time"),
+            session.get("end_time"),
+        )
         image_time_text = image_time.strftime("%Y-%m-%d %H:%M:%S") if image_time else "-"
-        csv_file_text = csv_path.name if csv_path else "-"
+        csv_file_text = csv_path.name if isinstance(csv_path, Path) else "-"
         confidence_text = f" ({confidence:.1%})" if confidence is not None else ""
         classification_group = classification if classification in {"PASS", "NG"} else "UNKNOWN"
         detail = (
             f"Classification: {classification}{confidence_text}\n"
             f"Image time: {image_time_text}\n"
-            f"Matched CSV: {csv_file_text} ({csv_time})"
+            f"Matched CSV: {csv_file_text} ({time_range})\n"
+            f"Boards in panel: {session.get('board_count') or 0}"
         )
         csv_detail = self._format_machine_csv_detail(csv_rows)
         if csv_detail:
@@ -1186,7 +1835,9 @@ class AurotekEdgeDashboard:
         if not csv_rows:
             return ""
 
-        csv_row = csv_rows[0]
+        csv_row = self._primary_product_row(csv_rows)
+        if not csv_row:
+            return ""
         fields = ("SN", "ProductId", "CutedTable", "Recipe_Name")
         return " | ".join(
             f"{field}: {self._clean_csv_value(csv_row.get(field)) or '-'}"
@@ -1216,6 +1867,22 @@ class AurotekEdgeDashboard:
         model_path = Path(self.model_var.get()).expanduser()
         result = self.classifier.predict(image_path=image_path, model_path=model_path)
         return result.label, result.confidence
+
+    def _predict_classification_cached(self, image_path: Path) -> tuple[str, float | None]:
+        model_path = Path(self.model_var.get()).expanduser()
+        cache_key = (
+            image_path.resolve() if image_path.exists() else image_path,
+            self._file_mtime_ns(image_path),
+            model_path.resolve() if model_path.exists() else model_path,
+            self._file_mtime_ns(model_path),
+        )
+        cached = self.classification_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = self.classifier.predict(image_path=image_path, model_path=model_path)
+        prediction = (result.label, result.confidence)
+        self.classification_cache[cache_key] = prediction
+        return prediction
 
     def _match_csv_for_image(self, image_path: Path) -> tuple[Path | None, list[dict[str, str]]]:
         csv_dir = Path(self.csv_import_var.get()).expanduser()
@@ -1257,12 +1924,18 @@ class AurotekEdgeDashboard:
 
     def _read_csv_rows(self, csv_path: Path) -> list[dict[str, str]]:
         try:
+            modified_time = csv_path.stat().st_mtime_ns
+            cached = self.csv_row_cache.get(csv_path)
+            if cached is not None and cached[0] == modified_time:
+                return cached[1]
             with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
                 reader = csv.DictReader(csv_file)
-                return [
+                rows = [
                     {str(key or ""): str(value or "") for key, value in row.items()}
                     for row in reader
                 ]
+            self.csv_row_cache[csv_path] = (modified_time, rows)
+            return rows
         except OSError:
             return []
 
@@ -1296,18 +1969,29 @@ class AurotekEdgeDashboard:
         try:
             threshold = float(self.sobel_threshold_var.get())
             thickness = int(round(float(self.display_thickness_var.get())))
+            blur_kernel = int(round(float(self.blur_kernel_var.get())))
+            sobel_kernel = int(round(float(self.sobel_kernel_var.get())))
+            cleanup_kernel = int(round(float(self.cleanup_kernel_var.get())))
         except (ValueError, tk.TclError):
             if show_error:
                 messagebox.showerror(
                     "Invalid Fine-Tune Value",
-                    "Please enter numeric values for Sobel Threshold and Display Thickness.",
+                    "Please enter numeric values for all Fine-Tune parameters.",
                 )
             return False
 
         threshold = min(max(threshold, 0.01), 0.50)
         thickness = min(max(thickness, 1), 8)
+        blur_kernel = self._normalize_finetune_kernel(blur_kernel, 1, 15)
+        sobel_kernel = self._normalize_finetune_kernel(sobel_kernel, 1, 7)
+        cleanup_kernel = self._normalize_finetune_kernel(cleanup_kernel, 1, 9)
         self.sobel_threshold_var.set(f"{threshold:.2f}")
         self.display_thickness_var.set(str(thickness))
+        self.blur_kernel_var.set(str(blur_kernel))
+        self.sobel_kernel_var.set(str(sobel_kernel))
+        self.cleanup_kernel_var.set(str(cleanup_kernel))
+        if self.edge_mode_var.get() not in FINETUNE_OPTION_VALUES:
+            self.edge_mode_var.set("Combined")
         self._render_finetune_current()
         return True
 
@@ -1317,18 +2001,51 @@ class AurotekEdgeDashboard:
         try:
             threshold = float(self.sobel_threshold_var.get())
             thickness = int(float(self.display_thickness_var.get()))
+            blur_kernel = int(float(self.blur_kernel_var.get()))
+            sobel_kernel = int(float(self.sobel_kernel_var.get()))
+            cleanup_kernel = int(float(self.cleanup_kernel_var.get()))
         except (ValueError, tk.TclError):
             return
-        _x_edge, _y_edge, all_edges = create_sobel_edge_masks(
+        x_edge, y_edge, all_edges = create_sobel_edge_masks(
             self.finetune_current_image,
             threshold,
+            blur_kernel_size=blur_kernel,
+            sobel_kernel_size=sobel_kernel,
+            cleanup_kernel_size=cleanup_kernel,
         )
-        sobel_bgr = cv2.cvtColor(thicken_edge_for_display(all_edges, thickness), cv2.COLOR_GRAY2BGR)
+        selected_edges = self._selected_finetune_edge_mask(x_edge, y_edge, all_edges)
+        sobel_bgr = cv2.cvtColor(
+            thicken_edge_for_display(selected_edges, thickness),
+            cv2.COLOR_GRAY2BGR,
+        )
         original_photo = tk_image_from_bgr_fixed(self.finetune_current_image, FINETUNE_PREVIEW_SIZE)
         sobel_photo = tk_image_from_bgr_fixed(sobel_bgr, FINETUNE_PREVIEW_SIZE)
         self.finetune_photos = [original_photo, sobel_photo]
         self.original_preview_label.configure(image=original_photo, text="")
         self.sobel_preview_label.configure(image=sobel_photo, text="")
+
+    def _reset_finetune_parameters(self) -> None:
+        self.sobel_threshold_var.set("0.12")
+        self.display_thickness_var.set("2")
+        self.blur_kernel_var.set("5")
+        self.sobel_kernel_var.set("3")
+        self.cleanup_kernel_var.set("3")
+        self.edge_mode_var.set("Combined")
+        self._render_finetune_current()
+
+    def _normalize_finetune_kernel(self, value: int, minimum: int, maximum: int) -> int:
+        kernel_size = min(max(value, minimum), maximum)
+        if kernel_size % 2 == 0:
+            kernel_size += 1 if kernel_size < maximum else -1
+        return kernel_size
+
+    def _selected_finetune_edge_mask(self, x_edge, y_edge, all_edges):
+        mode = self.edge_mode_var.get()
+        if mode == "Sobel X":
+            return x_edge
+        if mode == "Sobel Y":
+            return y_edge
+        return all_edges
 
     def _previous_finetune_image(self) -> None:
         if not self.finetune_images:
@@ -1353,8 +2070,21 @@ class AurotekEdgeDashboard:
         image_path = self.finetune_images[self.finetune_index]
         threshold = float(self.sobel_threshold_var.get())
         thickness = int(float(self.display_thickness_var.get()))
-        _x_edge, _y_edge, all_edges = create_sobel_edge_masks(self.finetune_current_image, threshold)
-        sobel_bgr = cv2.cvtColor(thicken_edge_for_display(all_edges, thickness), cv2.COLOR_GRAY2BGR)
+        blur_kernel = int(float(self.blur_kernel_var.get()))
+        sobel_kernel = int(float(self.sobel_kernel_var.get()))
+        cleanup_kernel = int(float(self.cleanup_kernel_var.get()))
+        x_edge, y_edge, all_edges = create_sobel_edge_masks(
+            self.finetune_current_image,
+            threshold,
+            blur_kernel_size=blur_kernel,
+            sobel_kernel_size=sobel_kernel,
+            cleanup_kernel_size=cleanup_kernel,
+        )
+        selected_edges = self._selected_finetune_edge_mask(x_edge, y_edge, all_edges)
+        sobel_bgr = cv2.cvtColor(
+            thicken_edge_for_display(selected_edges, thickness),
+            cv2.COLOR_GRAY2BGR,
+        )
         output_dir = Path(self.output_var.get()).expanduser() / "finetune_model"
         output_dir.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_dir / f"{image_path.stem}_sobel_finetuned.png"), sobel_bgr)

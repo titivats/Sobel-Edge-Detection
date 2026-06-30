@@ -39,7 +39,7 @@ def tk_image_from_bgr(image_bgr, max_size: tuple[int, int]) -> tk.PhotoImage:
 def tk_image_from_bgr_fixed(
     image_bgr,
     size: tuple[int, int],
-    background: tuple[int, int, int] = (15, 23, 42),
+    background: tuple[int, int, int] = (0, 0, 0),
 ) -> tk.PhotoImage:
     width, height = size
     image_height, image_width = image_bgr.shape[:2]
