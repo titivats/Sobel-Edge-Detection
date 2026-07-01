@@ -3,13 +3,21 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.cache
 
 venv/
 .venv/
 
+Input_files/
+Output_files/
+Output_Sobel/
 outputs/
 outputs_intrusion/
 outputs_intrusion_sobel/
 SepData/
+
+image_classification/dataset/
+image_classification/runs/
+image_classification/*.pt
 
 *.log

@@ -4,8 +4,10 @@ import csv
 import subprocess
 import sys
 import threading
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
@@ -59,6 +61,8 @@ DASHBOARD_POINT_DETAIL_WRAP = 660
 DASHBOARD_STARTUP_DELAY_MS = 5000
 DASHBOARD_REFRESH_MS = 2500
 DASHBOARD_UNMATCHED_SESSION = "__unmatched_product_info__"
+PRODUCT_INFO_SIGNATURE_SCAN_MS = 5000
+CLASSIFICATION_CACHE_LIMIT = 512
 
 
 class AurotekEdgeDashboard:
@@ -110,13 +114,21 @@ class AurotekEdgeDashboard:
         self.dashboard_filtered_sessions: list[dict[str, object]] = []
         self.dashboard_selected_session_key = ""
         self.dashboard_active_search_query = ""
-        self.dashboard_data_signature: tuple[int, int, int] | None = None
+        self.dashboard_data_signature: tuple[object, ...] | None = None
         self.dashboard_refresh_after_id: str | None = None
         self.dashboard_finding = False
         self.dashboard_spinner_after_id: str | None = None
         self.dashboard_spinner_angle = 0
         self.csv_row_cache: dict[Path, tuple[int, list[dict[str, str]]]] = {}
-        self.classification_cache: dict[tuple[Path, int, Path, int], tuple[str, float | None]] = {}
+        self.product_csv_signature: tuple[str, int, int] | None = None
+        self.product_csv_signature_next_scan_at = 0.0
+        self.product_csv_files: list[Path] = []
+        self.product_csv_index_signature: tuple[str, int, int] | None = None
+        self.product_csv_index: list[dict[str, object]] = []
+        self.classification_cache: OrderedDict[
+            tuple[Path, int, Path, int],
+            tuple[str, float | None],
+        ] = OrderedDict()
         self.finetune_images: list[Path] = []
         self.finetune_index = 0
         self.finetune_current_image = None
@@ -1214,6 +1226,11 @@ class AurotekEdgeDashboard:
         self.output_var.set(self.config_output_var.get())
         self.classifier.reset()
         self.csv_row_cache.clear()
+        self.product_csv_signature = None
+        self.product_csv_signature_next_scan_at = 0.0
+        self.product_csv_files = []
+        self.product_csv_index_signature = None
+        self.product_csv_index = []
         self.classification_cache.clear()
         self.dashboard_data_signature = None
         Path(self.output_var.get()).expanduser().mkdir(parents=True, exist_ok=True)
@@ -1315,7 +1332,7 @@ class AurotekEdgeDashboard:
         self._schedule_dashboard_refresh()
 
     def _load_point_cards(self, preserve_selection: bool = True) -> None:
-        self.dashboard_data_signature = self._dashboard_source_signature()
+        self.dashboard_data_signature = self._dashboard_source_signature(force_product_scan=True)
         csv_path = Path(self.output_var.get()).expanduser() / "intrusion_measurements.csv"
         if not csv_path.exists():
             self.dashboard_sessions = []
@@ -1367,20 +1384,72 @@ class AurotekEdgeDashboard:
             self._load_point_cards(preserve_selection=True)
         self._schedule_dashboard_refresh()
 
-    def _dashboard_source_signature(self) -> tuple[int, int, int]:
+    def _dashboard_source_signature(self, force_product_scan: bool = False) -> tuple[object, ...]:
         output_csv = Path(self.output_var.get()).expanduser() / "intrusion_measurements.csv"
         output_mtime = self._file_mtime_ns(output_csv)
+        product_signature, _product_files = self._product_csv_sources(force=force_product_scan)
+        return output_mtime, product_signature
+
+    def _product_csv_sources(
+        self,
+        force: bool = False,
+    ) -> tuple[tuple[str, int, int], list[Path]]:
         csv_dir = Path(self.csv_import_var.get()).expanduser()
+        dir_key = str(csv_dir.resolve())
+        now = monotonic()
+        if (
+            not force
+            and self.product_csv_signature is not None
+            and now < self.product_csv_signature_next_scan_at
+        ):
+            return self.product_csv_signature, self.product_csv_files
+
         latest_product_info_mtime = 0
-        product_info_count = 0
+        product_csv_files: list[Path] = []
         if csv_dir.exists():
-            for csv_path in csv_dir.rglob("*.csv"):
-                product_info_count += 1
+            for csv_path in sorted(csv_dir.rglob("*.csv")):
+                product_csv_files.append(csv_path)
                 latest_product_info_mtime = max(
                     latest_product_info_mtime,
                     self._file_mtime_ns(csv_path),
                 )
-        return output_mtime, latest_product_info_mtime, product_info_count
+        signature = (dir_key, latest_product_info_mtime, len(product_csv_files))
+        self.product_csv_signature = signature
+        self.product_csv_signature_next_scan_at = now + (PRODUCT_INFO_SIGNATURE_SCAN_MS / 1000)
+        self.product_csv_files = product_csv_files
+        return signature, product_csv_files
+
+    def _ensure_product_csv_index(self) -> list[dict[str, object]]:
+        signature, csv_files = self._product_csv_sources()
+        if self.product_csv_index_signature == signature:
+            return self.product_csv_index
+
+        index: list[dict[str, object]] = []
+        for csv_path in csv_files:
+            rows = self._read_csv_rows(csv_path)
+            time_ranges: list[tuple[datetime, datetime, float]] = []
+            for row in rows:
+                start_time = self._parse_csv_datetime(
+                    row.get("Start_time") or row.get("StartTime") or row.get("Start")
+                )
+                end_time = self._parse_csv_datetime(
+                    row.get("End_time") or row.get("EndTime") or row.get("End")
+                )
+                if start_time and end_time:
+                    duration_seconds = max((end_time - start_time).total_seconds(), 0.0)
+                    time_ranges.append((start_time, end_time, duration_seconds))
+            index.append(
+                {
+                    "path": csv_path,
+                    "rows": rows,
+                    "timestamp": timestamp_from_name(csv_path),
+                    "ranges": time_ranges,
+                }
+            )
+
+        self.product_csv_index_signature = signature
+        self.product_csv_index = index
+        return index
 
     def _file_mtime_ns(self, path: Path) -> int:
         try:
@@ -1925,11 +1994,6 @@ class AurotekEdgeDashboard:
                 continue
         return None
 
-    def _predict_classification(self, image_path: Path) -> tuple[str, float | None]:
-        model_path = Path(self.model_var.get()).expanduser()
-        result = self.classifier.predict(image_path=image_path, model_path=model_path)
-        return result.label, result.confidence
-
     def _predict_classification_cached(self, image_path: Path) -> tuple[str, float | None]:
         model_path = Path(self.model_var.get()).expanduser()
         cache_key = (
@@ -1940,49 +2004,48 @@ class AurotekEdgeDashboard:
         )
         cached = self.classification_cache.get(cache_key)
         if cached is not None:
+            self.classification_cache.move_to_end(cache_key)
             return cached
         result = self.classifier.predict(image_path=image_path, model_path=model_path)
         prediction = (result.label, result.confidence)
         self.classification_cache[cache_key] = prediction
+        self.classification_cache.move_to_end(cache_key)
+        while len(self.classification_cache) > CLASSIFICATION_CACHE_LIMIT:
+            self.classification_cache.popitem(last=False)
         return prediction
 
     def _match_csv_for_image(self, image_path: Path) -> tuple[Path | None, list[dict[str, str]]]:
-        csv_dir = Path(self.csv_import_var.get()).expanduser()
         image_time = timestamp_from_name(image_path)
-        if image_time is None or not csv_dir.exists():
+        if image_time is None:
             return None, []
 
-        range_candidates: list[tuple[datetime, float, Path, list[dict[str, str]]]] = []
-        filename_candidates: list[tuple[datetime, Path]] = []
-        for csv_path in csv_dir.rglob("*.csv"):
-            rows = self._read_csv_rows(csv_path)
-            for row in rows:
-                start_time = self._parse_csv_datetime(
-                    row.get("Start_time") or row.get("StartTime") or row.get("Start")
-                )
-                end_time = self._parse_csv_datetime(
-                    row.get("End_time") or row.get("EndTime") or row.get("End")
-                )
-                if start_time and end_time and start_time <= image_time <= end_time:
-                    duration_seconds = max((end_time - start_time).total_seconds(), 0.0)
-                    range_candidates.append((start_time, -duration_seconds, csv_path, rows))
+        best_range: tuple[datetime, float, Path, list[dict[str, str]]] | None = None
+        best_filename: tuple[datetime, Path, list[dict[str, str]]] | None = None
+        for entry in self._ensure_product_csv_index():
+            csv_path = entry.get("path")
+            rows = entry.get("rows")
+            if not isinstance(csv_path, Path) or not isinstance(rows, list):
+                continue
 
-            csv_time = timestamp_from_name(csv_path)
-            if csv_time is not None and csv_time <= image_time:
-                filename_candidates.append((csv_time, csv_path))
+            for start_time, end_time, duration_seconds in entry.get("ranges", []):
+                if start_time <= image_time <= end_time:
+                    candidate = (start_time, -duration_seconds, csv_path, rows)
+                    if best_range is None or candidate[:2] > best_range[:2]:
+                        best_range = candidate
 
-        if range_candidates:
-            _start_time, _duration, csv_path, rows = max(
-                range_candidates,
-                key=lambda item: (item[0], item[1]),
-            )
+            csv_time = entry.get("timestamp")
+            if isinstance(csv_time, datetime) and csv_time <= image_time:
+                candidate = (csv_time, csv_path, rows)
+                if best_filename is None or csv_time > best_filename[0]:
+                    best_filename = candidate
+
+        if best_range is not None:
+            _start_time, _duration, csv_path, rows = best_range
             return csv_path, rows
-
-        if not filename_candidates:
-            return None, []
-
-        _csv_time, csv_path = max(filename_candidates, key=lambda item: item[0])
-        return csv_path, self._read_csv_rows(csv_path)
+        if best_filename is not None:
+            _csv_time, csv_path, rows = best_filename
+            return csv_path, rows
+        return None, []
 
     def _read_csv_rows(self, csv_path: Path) -> list[dict[str, str]]:
         try:
