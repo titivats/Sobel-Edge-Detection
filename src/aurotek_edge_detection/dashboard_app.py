@@ -73,6 +73,10 @@ class AurotekEdgeDashboard:
         self.csv_import_var = tk.StringVar(value=str(DEFAULT_CSV_DIR))
         self.output_var = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
         self.model_var = tk.StringVar(value=str(DEFAULT_CLASSIFICATION_MODEL))
+        self.config_input_var = tk.StringVar(value=str(DEFAULT_INPUT_DIR))
+        self.config_csv_import_var = tk.StringVar(value=str(DEFAULT_CSV_DIR))
+        self.config_output_var = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
+        self.config_model_var = tk.StringVar(value=str(DEFAULT_CLASSIFICATION_MODEL))
         self.pixels_per_mm_var = tk.StringVar(value="1")
         self.black_threshold_var = tk.StringVar(value="55")
         self.sobel_threshold_var = tk.StringVar(value="0.12")
@@ -225,26 +229,26 @@ class AurotekEdgeDashboard:
             config_panel,
             row=1,
             label="Input Image",
-            variable=self.input_var,
+            variable=self.config_input_var,
             button_text="Browse",
-            command=lambda: self._browse_directory(self.input_var),
+            command=lambda: self._browse_directory(self.config_input_var),
         )
         self._add_path_row(
             config_panel,
             row=2,
             label="Import .CSV",
-            variable=self.csv_import_var,
+            variable=self.config_csv_import_var,
             button_text="Browse",
-            command=lambda: self._browse_directory(self.csv_import_var),
+            command=lambda: self._browse_directory(self.config_csv_import_var),
         )
         self._add_path_row(
             config_panel,
             row=3,
             label="Models Select",
-            variable=self.model_var,
+            variable=self.config_model_var,
             button_text="Browse",
             command=lambda: self._browse_file(
-                self.model_var,
+                self.config_model_var,
                 [("PyTorch model", "*.pt"), ("All files", "*.*")],
             ),
         )
@@ -252,9 +256,9 @@ class AurotekEdgeDashboard:
             config_panel,
             row=4,
             label="Output",
-            variable=self.output_var,
+            variable=self.config_output_var,
             button_text="Browse",
-            command=lambda: self._browse_directory(self.output_var),
+            command=lambda: self._browse_directory(self.config_output_var),
         )
 
         action_row = tk.Frame(config_panel, background=PANEL)
@@ -312,7 +316,7 @@ class AurotekEdgeDashboard:
         title_block.grid(row=0, column=0, sticky="nw")
         tk.Label(
             title_block,
-            text="Production Inspection Overview",
+            text="Dashboard Real-time Predict by Sobel Edge Detection",
             anchor="w",
             font=("Segoe UI Semibold", 16),
             foreground=TEXT,
@@ -328,7 +332,7 @@ class AurotekEdgeDashboard:
         self._add_kpi_card(kpi_row, "UNKNOWN", self.dashboard_unknown_var, RUNNING_ORANGE)
 
         search_panel = tk.Frame(summary_panel, background=PANEL)
-        search_panel.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        search_panel.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         search_panel.columnconfigure(0, weight=1)
 
         search_controls = tk.Frame(search_panel, background=PANEL)
@@ -410,7 +414,7 @@ class AurotekEdgeDashboard:
             foreground=MUTED,
             background=PANEL,
             wraplength=1200,
-        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
         result_panel = tk.Frame(
             body,
@@ -629,6 +633,7 @@ class AurotekEdgeDashboard:
         )
         adjustment_panel.grid(row=2, column=0, sticky="ew", pady=(0, 14))
         adjustment_panel.columnconfigure(1, weight=1)
+        adjustment_panel.columnconfigure(2, weight=0)
         adjust_header = tk.Frame(adjustment_panel, background=FINETUNE_CARD_BG)
         adjust_header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         adjust_header.columnconfigure(0, weight=1)
@@ -1045,7 +1050,7 @@ class AurotekEdgeDashboard:
             font=("Segoe UI", 10, "bold"),
             foreground=TEXT,
             background=background,
-        ).grid(row=control_row, column=0, sticky="w", pady=(0, 2))
+        ).grid(row=control_row, column=0, sticky="w")
         tk.Scale(
             parent,
             from_=from_value,
@@ -1059,20 +1064,47 @@ class AurotekEdgeDashboard:
             troughcolor="#e5e7eb",
             activebackground=ACCENT,
             showvalue=False,
-        ).grid(row=control_row, column=1, sticky="ew", padx=(12, 10), pady=(0, 2))
+        ).grid(row=control_row, column=1, sticky="ew", padx=(12, 8))
+        value_controls = tk.Frame(parent, background=background)
+        value_controls.grid(row=control_row, column=2, sticky="e")
+        self._add_finetune_step_button(
+            value_controls,
+            "-",
+            lambda _variable=variable, _step=-resolution: self._step_finetune_parameter(
+                _variable,
+                _step,
+            ),
+        )
+        entry_frame = tk.Frame(
+            value_controls,
+            background=PANEL,
+            highlightthickness=1,
+            highlightbackground=TEXT,
+            width=44,
+            height=24,
+        )
+        entry_frame.pack(side="left", padx=3)
+        entry_frame.pack_propagate(False)
         entry = tk.Entry(
-            parent,
+            entry_frame,
             textvariable=variable,
             background=PANEL,
             foreground=TEXT,
             insertbackground=TEXT,
-            relief="solid",
-            borderwidth=1,
-            font=("Consolas", 11),
-            width=5,
+            relief="flat",
+            borderwidth=0,
+            font=("Consolas", 10),
             justify="center",
         )
-        entry.grid(row=control_row, column=2, sticky="e", pady=(0, 2), ipady=7)
+        entry.pack(fill="both", expand=True, padx=1, pady=1)
+        self._add_finetune_step_button(
+            value_controls,
+            "+",
+            lambda _variable=variable, _step=resolution: self._step_finetune_parameter(
+                _variable,
+                _step,
+            ),
+        )
         entry.bind("<Return>", lambda _event: self._commit_finetune_parameters())
         entry.bind("<FocusOut>", lambda _event: self._commit_finetune_parameters(show_error=False))
         tk.Label(
@@ -1084,7 +1116,29 @@ class AurotekEdgeDashboard:
             foreground=MUTED,
             background=background,
             wraplength=300,
-        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 1))
+
+    def _add_finetune_step_button(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command,
+    ) -> None:
+        tk.Button(
+            parent,
+            text=text,
+            command=command,
+            background=PANEL,
+            foreground=ACCENT_DARK,
+            activebackground="#e5e7eb",
+            activeforeground=ACCENT_DARK,
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 9, "bold"),
+            width=2,
+            padx=0,
+            pady=1,
+        ).pack(side="left")
 
     def _add_finetune_option_row(
         self,
@@ -1105,7 +1159,7 @@ class AurotekEdgeDashboard:
             font=("Segoe UI", 10, "bold"),
             foreground=TEXT,
             background=background,
-        ).grid(row=control_row, column=0, sticky="w", pady=(0, 2))
+        ).grid(row=control_row, column=0, sticky="w")
         combobox = ttk.Combobox(
             parent,
             textvariable=variable,
@@ -1113,14 +1167,13 @@ class AurotekEdgeDashboard:
             state="readonly",
             font=("Segoe UI", 10),
             justify="center",
+            width=16,
         )
         combobox.grid(
             row=control_row,
             column=1,
-            columnspan=2,
-            sticky="ew",
+            sticky="w",
             padx=(12, 0),
-            pady=(0, 2),
             ipady=5,
         )
         combobox.bind(
@@ -1136,7 +1189,7 @@ class AurotekEdgeDashboard:
             foreground=MUTED,
             background=background,
             wraplength=300,
-        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+        ).grid(row=description_row, column=0, columnspan=3, sticky="ew", pady=(0, 1))
 
     def _browse_directory(self, variable: tk.StringVar) -> None:
         selected = filedialog.askdirectory(initialdir=variable.get() or str(PROJECT_ROOT))
@@ -1152,20 +1205,29 @@ class AurotekEdgeDashboard:
         )
         if selected:
             variable.set(selected)
-            self.classifier.reset()
 
     def _save_configuration(self) -> None:
+        previous_model = self.model_var.get()
+        self.input_var.set(self.config_input_var.get())
+        self.csv_import_var.set(self.config_csv_import_var.get())
+        self.model_var.set(self.config_model_var.get())
+        self.output_var.set(self.config_output_var.get())
         self.classifier.reset()
+        self.csv_row_cache.clear()
+        self.classification_cache.clear()
+        self.dashboard_data_signature = None
         Path(self.output_var.get()).expanduser().mkdir(parents=True, exist_ok=True)
-        self._set_status("Configuration saved.", ONLINE_GREEN)
+        if previous_model != self.model_var.get():
+            self._set_status("Configuration saved. Model will reload on next prediction.", ONLINE_GREEN)
+        else:
+            self._set_status("Configuration saved.", ONLINE_GREEN)
 
     def _reset_configuration_defaults(self) -> None:
-        self.input_var.set(str(DEFAULT_INPUT_DIR))
-        self.csv_import_var.set(str(DEFAULT_CSV_DIR))
-        self.model_var.set(str(DEFAULT_CLASSIFICATION_MODEL))
-        self.output_var.set(str(DEFAULT_OUTPUT_DIR))
-        self.classifier.reset()
-        self._set_status("Configuration reset to default.", ONLINE_GREEN)
+        self.config_input_var.set(str(DEFAULT_INPUT_DIR))
+        self.config_csv_import_var.set(str(DEFAULT_CSV_DIR))
+        self.config_model_var.set(str(DEFAULT_CLASSIFICATION_MODEL))
+        self.config_output_var.set(str(DEFAULT_OUTPUT_DIR))
+        self._set_status("Default configuration staged. Press Save to apply.", RUNNING_ORANGE)
 
     def _start_measurement(self) -> None:
         if self.is_running:
@@ -1554,7 +1616,7 @@ class AurotekEdgeDashboard:
         self.dashboard_ng_var.set(str(failed))
         self.dashboard_unknown_var.set(str(unknown))
         self.dashboard_update_var.set(
-            f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Last update: {datetime.now().strftime('%d %B %Y %H:%M:%S')}"
         )
 
     def _show_dashboard_placeholder(self, message: str) -> None:
@@ -2032,6 +2094,18 @@ class AurotekEdgeDashboard:
         self.cleanup_kernel_var.set("3")
         self.edge_mode_var.set("Combined")
         self._render_finetune_current()
+
+    def _step_finetune_parameter(self, variable: tk.StringVar, step: float) -> None:
+        try:
+            current_value = float(variable.get())
+        except (ValueError, tk.TclError):
+            current_value = 0.0
+        next_value = current_value + step
+        if abs(step) < 1:
+            variable.set(f"{next_value:.2f}")
+        else:
+            variable.set(str(int(round(next_value))))
+        self._commit_finetune_parameters(show_error=False)
 
     def _normalize_finetune_kernel(self, value: int, minimum: int, maximum: int) -> int:
         kernel_size = min(max(value, minimum), maximum)
