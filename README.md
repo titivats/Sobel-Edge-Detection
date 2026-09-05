@@ -1,9 +1,43 @@
-# Aurotek Router Edge Intrusion Measurement
+# Sobel Edge Detection & AVTR
 
-Sobel-based measurement project for Aurotek Router PCB tab cutting images.
-The camera captures `.bmp` files into `SepData\camera`; this project converts each image to the selected Sobel edge view and measures tab intrusion into the black router background.
+This branch contains two related Aurotek Router vision workflows:
 
-## Quick Run
+- **AVTR — Automatic Vision Tab Router** in [`RouterVisionStudio/`](RouterVisionStudio/): a Windows Industrial HMI for AUO6000 data discovery, real-time Sobel tuning, GOOD/NG labeling, DINOv2 training and fail-safe panel inspection.
+- **Edge intrusion measurement CLI** in [`src/aurotek_edge_detection/`](src/aurotek_edge_detection/): the original deterministic Sobel measurement workflow.
+
+The AVTR production entry point is `RouterVisionStudio/production_app.py`.
+Machine images, Result/Log/Recipe exports, runtime settings, labels and trained
+weights are deliberately excluded from this public branch.
+
+## AVTR Quick Start
+
+```powershell
+git clone --branch new-version https://github.com/titivats/Sobel-Edge-Detection.git
+cd Sobel-Edge-Detection
+py -m venv venv
+.\venv\Scripts\python.exe -m pip install -r .\RouterVisionStudio\requirements.txt
+$env:AVTR_SETTINGS_PASSWORD = "choose-your-own-password"
+[Environment]::SetEnvironmentVariable("AVTR_SETTINGS_PASSWORD", $env:AVTR_SETTINGS_PASSWORD, "User")
+.\RouterVisionStudio\run.bat
+```
+
+See [`RouterVisionStudio/README.md`](RouterVisionStudio/README.md) for the AVTR
+workflow, safety constraints and Engineering Studio notes.
+
+Open SETTING and select the AUO6000 export root after launch. The optional
+`config.example.json` is a manual configuration template; edit its paths before use.
+
+> Safety: the included conveyor link is simulation-only. No compatible and
+> validated model means HOLD. Physical PLC integration requires an approved
+> protocol, wiring map, polarity and acknowledgement sequence.
+
+## Edge Intrusion Measurement CLI
+
+The camera captures `.bmp` files into `SepData\camera`; this workflow converts
+each image to the selected Sobel edge view and measures tab intrusion into the
+black router background.
+
+### Quick Run
 
 For current trial calibration, where `1 px = 1 mm`:
 

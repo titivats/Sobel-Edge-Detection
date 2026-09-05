@@ -13,3 +13,27 @@ outputs_intrusion_sobel/
 SepData/
 
 *.log
+
+# AVTR machine data and local runtime state
+Router/
+sobel/
+RouterVisionStudio/config.json
+RouterVisionStudio/baselines.json
+RouterVisionStudio/labels.json
+RouterVisionStudio/positions.json
+RouterVisionStudio/sobel_workflow.json
+RouterVisionStudio/sobel_workflow.tmp
+RouterVisionStudio/sobel_finetune/
+RouterVisionStudio/models/
+
+# Credentials, trained weights and proprietary machine files
+.env
+.env.*
+!.env.example
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.db
+*.lic
+*.bmp
