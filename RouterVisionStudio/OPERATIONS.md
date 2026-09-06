@@ -33,6 +33,9 @@ for manual configuration; replace its example paths before launching.
    separate states. A model has one Sobel configuration: only labeled images
    saved with the currently selected configuration and crop are eligible for
    training. Images saved with other settings remain available for further work.
+   X/Y edge weights and brightness use 0.001 steps, shown and saved at the same
+   precision; blur strength and normalization use 0.01 steps. Older records that
+   already rounded a value cannot recover the lost digits; review and save again.
 3. **VISION TRANSFORMER:** label at least five eligible GOOD and five eligible NG
    images, then select **TRAIN & SAVE MODEL**. A fresh linear head is trained on
    frozen DINOv2 features. The first run downloads the pinned backbone source and
@@ -80,6 +83,15 @@ Machine exports are read-only. Local `config.json`, `sobel_workflow.json`, saved
 Sobel images and models stay outside the machine source. Runtime data, passwords,
 machine exports and weights are not included in Git. Model writes use temporary
 files and replace the checkpoint only after serialization succeeds.
+
+Sobel saves create a new PNG version before committing its workflow record. A
+failed record write keeps the previous image and label/status record unchanged;
+successful saves retain previous PNG versions in `sobel_finetune` (disk usage can
+grow). Unicode output folders, including Thai names, are supported. New records
+also check output size/modification time so a replaced or damaged export is not
+silently treated as SAVED. These checks are not cryptographic integrity checks.
+If a model is saved but its training-status record fails to save, the UI reports
+failure rather than claiming TRAINED; resolve the storage error and train again.
 
 ```powershell
 cd RouterVisionStudio

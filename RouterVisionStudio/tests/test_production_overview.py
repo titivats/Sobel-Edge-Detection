@@ -154,7 +154,7 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn("QSplitter(Qt.Horizontal)", source)
         self.assertIn("LIVE ORIGINAL / SOBEL COMPARISON", source)
         self.assertIn("SOBEL PARAMETERS", source)
-        self.assertIn("Decimal controls use precise 0.01 steps.", source)
+        self.assertIn("X / Y weights and brightness: 0.001 steps. Other decimals: 0.01.", source)
         self.assertIn("self.slider_sobel_clip.setRange(9000, 10000)", source)
         self.assertIn('QPushButton("RESET PARAMETERS")', source)
         self.assertIn('QPushButton("◀")', source)

@@ -5,6 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tempfile
 import unittest
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -132,6 +133,125 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertEqual(self.window._training_items(), [(path, "GOOD")])
         record["sobel_parameters"] = asdict(SobelConfig(blur_ksize=7))
         self.assertEqual(self.window._training_items(), [])
+
+    def test_fine_slider_values_are_displayed_and_recorded_without_rounding(self):
+        self.window.slider_gradient_x.setValue(1001)
+        self.window.slider_gradient_y.setValue(1002)
+        self.window.slider_edge_gain.setValue(1003)
+        parameters = self.window._sobel_parameter_record()
+        self.assertEqual(parameters["gradient_x_weight"], 1.001)
+        self.assertEqual(parameters["gradient_y_weight"], 1.002)
+        self.assertEqual(parameters["edge_gain"], 1.003)
+        self.assertEqual(self.window.lbl_gradient_x_value.text(), "1.001")
+        self.assertEqual(self.window.lbl_gradient_y_value.text(), "1.002")
+        self.assertTrue(self.window.lbl_edge_gain_value.text().startswith("1.003"))
+
+    def test_fine_parameter_change_excludes_old_saved_image_from_training(self):
+        self.model()
+        path = self.window.settings_image_paths[0]
+        self.save_record(path)
+        self.window.slider_gradient_x.setValue(1001)
+        self.assertEqual(self.window._training_items(), [])
+        self.assertTrue(self.window._settings_model_needs_retraining())
+
+    def test_sobel_save_reloads_exact_fine_parameters(self):
+        self.model()
+        self.window.slider_gradient_x.setValue(1001)
+        self.window.slider_gradient_y.setValue(1002)
+        self.window.slider_edge_gain.setValue(1003)
+        self.window._save_current_sobel()
+        self.window.slider_gradient_x.setValue(1500)
+        self.window.slider_gradient_y.setValue(1500)
+        self.window.slider_edge_gain.setValue(1500)
+        self.window._load_current_image_parameters()
+        self.assertEqual(self.window.slider_gradient_x.value(), 1001)
+        self.assertEqual(self.window.slider_gradient_y.value(), 1002)
+        self.assertEqual(self.window.slider_edge_gain.value(), 1003)
+
+    def test_label_write_failure_keeps_previous_label_and_training_record(self):
+        self.model()
+        path = self.window._current_training_image_path()
+        previous = deepcopy(self.save_record(path))
+        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
+                patch.object(ui.QMessageBox, "warning") as warning:
+            self.window._set_training_label("NG")
+        warning.assert_called_once()
+        self.assertEqual(self.window.sobel_records[self.window._sobel_record_key(path)], previous)
+        self.assertEqual(self.window._training_label_for(path), "GOOD")
+
+    def test_sobel_status_write_failure_preserves_previous_image_and_record(self):
+        self.model()
+        path = self.window.settings_image_path
+        self.window._save_current_sobel()
+        key = self.window._sobel_record_key(path)
+        previous = deepcopy(self.window.sobel_records[key])
+        original_output = Path(previous["sobel_output"])
+        previous_bytes = original_output.read_bytes()
+        self.window.slider_noise_floor.setValue(200)
+        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
+                patch.object(ui.QMessageBox, "warning") as warning:
+            self.window._save_current_sobel()
+        warning.assert_called_once()
+        self.assertEqual(self.window.sobel_records[key], previous)
+        self.assertEqual(original_output.read_bytes(), previous_bytes)
+        self.assertFalse(self.window._record_is_saved(path, current_parameters=True))
+
+    def test_sobel_output_supports_unicode_directory(self):
+        self.model()
+        with patch.object(ui, "SOBEL_OUTPUT_DIR", self.root / "\u0e20\u0e32\u0e1e Sobel"), \
+                patch.object(ui.QMessageBox, "warning") as warning:
+            self.window._save_current_sobel()
+        warning.assert_not_called()
+        record = self.window.sobel_records[self.window._sobel_record_key(self.window.settings_image_path)]
+        decoded = cv2.imdecode(np.fromfile(record["sobel_output"], dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        self.assertIsNotNone(decoded)
+
+    def test_modified_sobel_output_is_no_longer_saved(self):
+        self.model()
+        path = self.window.settings_image_path
+        self.window._save_current_sobel()
+        self.assertTrue(self.window._record_is_saved(path))
+        record = self.window.sobel_records[self.window._sobel_record_key(path)]
+        Path(record["sobel_output"]).write_bytes(b"damaged output")
+        self.assertFalse(self.window._record_is_saved(path))
+
+    def test_failed_first_sobel_save_does_not_leave_a_saved_record_or_output(self):
+        self.model()
+        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
+                patch.object(ui.QMessageBox, "warning"):
+            self.window._save_current_sobel()
+        self.assertFalse(self.window._record_is_saved(self.window.settings_image_path))
+        self.assertEqual(list(ui.SOBEL_OUTPUT_DIR.iterdir()), [])
+
+    def test_workflow_replace_failure_preserves_file_and_cleans_temporary_file(self):
+        self.window._save_sobel_records()
+        previous = ui.SOBEL_WORKFLOW_PATH.read_bytes()
+        with patch.object(Path, "replace", side_effect=OSError("file locked")):
+            with self.assertRaises(OSError):
+                self.window._save_sobel_records({"new": {"training_label": "NG"}})
+        self.assertEqual(ui.SOBEL_WORKFLOW_PATH.read_bytes(), previous)
+        self.assertEqual(list(self.root.glob(".workflow.json.*.tmp")), [])
+
+    def test_training_status_write_failure_does_not_mark_images_trained_in_memory(self):
+        classifier = self.model()
+        path = self.window.settings_image_paths[0]
+        self.save_record(path, trained=False)
+        previous = deepcopy(self.window.sobel_records)
+        self.window.training_model_target = self.window._model_path("PRODUCT-A")
+        self.window.training_paths_in_progress = [path]
+        self.window.training_input_signatures = {path: self.window._source_signature(path)}
+        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")):
+            self.window._settings_training_done(classifier, classifier.report)
+        self.assertEqual(self.window.sobel_records, previous)
+        self.assertFalse(self.window.training_last_success)
+        self.assertIn("training status could not be saved", self.window.training_last_message)
+
+    def test_workflow_cannot_be_written_inside_machine_source(self):
+        target = self.source / "workflow.json"
+        with patch.object(ui, "SOBEL_WORKFLOW_PATH", target):
+            with self.assertRaises(ui.ProtectedPathError):
+                self.window._save_sobel_records()
+        self.assertFalse(target.exists())
 
     def test_failed_test_never_enables_save_and_unapproved_settings_do_not_mutate(self):
         old_cfg = asdict(self.window.cfg)

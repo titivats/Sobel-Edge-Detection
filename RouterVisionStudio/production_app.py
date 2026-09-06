@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import traceback
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -822,11 +823,11 @@ class MainWindow(QMainWindow):
         self.slider_sobel_kernel.setPageStep(1)
         self.slider_gradient_x = QSlider(Qt.Horizontal)
         self.slider_gradient_x.setRange(0, 2000)
-        self.slider_gradient_x.setSingleStep(10)
+        self.slider_gradient_x.setSingleStep(1)
         self.slider_gradient_x.setPageStep(100)
         self.slider_gradient_y = QSlider(Qt.Horizontal)
         self.slider_gradient_y.setRange(0, 2000)
-        self.slider_gradient_y.setSingleStep(10)
+        self.slider_gradient_y.setSingleStep(1)
         self.slider_gradient_y.setPageStep(100)
         self.slider_sobel_clip = QSlider(Qt.Horizontal)
         self.slider_sobel_clip.setRange(9000, 10000)
@@ -834,7 +835,7 @@ class MainWindow(QMainWindow):
         self.slider_sobel_clip.setPageStep(10)
         self.slider_edge_gain = QSlider(Qt.Horizontal)
         self.slider_edge_gain.setRange(500, 3000)
-        self.slider_edge_gain.setSingleStep(10)
+        self.slider_edge_gain.setSingleStep(1)
         self.slider_edge_gain.setPageStep(100)
         self.slider_noise_floor = QSlider(Qt.Horizontal)
         self.slider_noise_floor.setRange(0, 100)
@@ -1162,7 +1163,8 @@ class MainWindow(QMainWindow):
         parameter_layout.setContentsMargins(10, 8, 10, 10)
         parameter_title = QLabel("SOBEL PARAMETERS")
         parameter_title.setStyleSheet("color:#1d4ed8; font-weight:800;")
-        parameter_hint = QLabel("Decimal controls use precise 0.01 steps.")
+        parameter_hint = QLabel("X / Y weights and brightness: 0.001 steps. Other decimals: 0.01.")
+        parameter_hint.setWordWrap(True)
         parameter_hint.setStyleSheet("color:#64748b; font-size:9pt;")
         parameter_layout.addWidget(parameter_title)
         parameter_layout.addWidget(parameter_hint)
@@ -2234,16 +2236,16 @@ class MainWindow(QMainWindow):
             str(kernel_values[self.slider_sobel_kernel.value()])
         )
         self.lbl_gradient_x_value.setText(
-            f"{self.slider_gradient_x.value() / 1000.0:.2f}"
+            f"{self.slider_gradient_x.value() / 1000.0:.3f}"
         )
         self.lbl_gradient_y_value.setText(
-            f"{self.slider_gradient_y.value() / 1000.0:.2f}"
+            f"{self.slider_gradient_y.value() / 1000.0:.3f}"
         )
         self.lbl_sobel_clip_value.setText(
             f"{self.slider_sobel_clip.value() / 100.0:.2f} %"
         )
         self.lbl_edge_gain_value.setText(
-            f"{self.slider_edge_gain.value() / 1000.0:.2f}×"
+            f"{self.slider_edge_gain.value() / 1000.0:.3f}×"
         )
         self.lbl_noise_floor_value.setText(str(self.slider_noise_floor.value()))
         if hasattr(self, "lbl_sobel_save_status"):
@@ -2347,19 +2349,28 @@ class MainWindow(QMainWindow):
         records = raw.get("images", {}) if isinstance(raw, dict) else {}
         return records if isinstance(records, dict) else {}
 
-    def _save_sobel_records(self) -> None:
+    def _save_sobel_records(self, records: dict[str, dict] | None = None) -> None:
+        check_write_target(SOBEL_WORKFLOW_PATH, self._settings_protected_roots())
         SOBEL_WORKFLOW_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = SOBEL_WORKFLOW_PATH.with_suffix(".tmp")
+        temporary = SOBEL_WORKFLOW_PATH.with_name(
+            f".{SOBEL_WORKFLOW_PATH.name}.{uuid.uuid4().hex}.tmp"
+        )
         payload = {
             "version": 3,
             "source_path": self.settings_image_dir,
-            "images": self.sobel_records,
+            "images": self.sobel_records if records is None else records,
         }
-        temporary.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        temporary.replace(SOBEL_WORKFLOW_PATH)
+        try:
+            temporary.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
+                encoding="utf-8",
+            )
+            temporary.replace(SOBEL_WORKFLOW_PATH)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @staticmethod
     def _sobel_record_key(path: str) -> str:
@@ -2379,10 +2390,10 @@ class MainWindow(QMainWindow):
             "blur_ksize": sobel.blur_ksize,
             "blur_sigma": round(sobel.blur_sigma, 2),
             "sobel_ksize": sobel.sobel_ksize,
-            "gradient_x_weight": round(sobel.gradient_x_weight, 2),
-            "gradient_y_weight": round(sobel.gradient_y_weight, 2),
+            "gradient_x_weight": round(sobel.gradient_x_weight, 3),
+            "gradient_y_weight": round(sobel.gradient_y_weight, 3),
             "clip_percentile": round(sobel.clip_percentile, 2),
-            "edge_gain": round(sobel.edge_gain, 2),
+            "edge_gain": round(sobel.edge_gain, 3),
             "noise_floor": sobel.noise_floor,
         }
 
@@ -2420,6 +2431,12 @@ class MainWindow(QMainWindow):
         output = Path(str(record.get("sobel_output", "")))
         if not output.is_file() or not self._record_matches_source(path, record):
             return False
+        if "sobel_output_signature" in record:
+            try:
+                if record["sobel_output_signature"] != self._source_signature(str(output)):
+                    return False
+            except OSError:
+                return False
         if current_parameters:
             saved_parameters = self._normalise_saved_sobel_parameters(
                 record.get("sobel_parameters")
@@ -2494,8 +2511,8 @@ class MainWindow(QMainWindow):
         self._show_training_image()
         try:
             self._save_sobel_records()
-        except OSError:
-            pass
+        except (OSError, ValueError, ProtectedPathError) as exc:
+            QMessageBox.warning(self, "Data source not saved", str(exc))
         if paths:
             self.settings_workflow.setCurrentIndex(1)
 
@@ -2760,12 +2777,13 @@ class MainWindow(QMainWindow):
             self.training_last_message = ""
             self.training_last_success = None
             self._invalidate_settings_trial()
-        self.sobel_records[key] = record
+        updated_records = {**self.sobel_records, key: record}
         try:
-            self._save_sobel_records()
-        except OSError as exc:
+            self._save_sobel_records(updated_records)
+        except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.warning(self, "Label not saved", str(exc))
             return
+        self.sobel_records = updated_records
         self._refresh_training_workflow_status()
         self._refresh_image_selector_labels()
         self._refresh_trial_model_status()
@@ -3208,6 +3226,11 @@ class MainWindow(QMainWindow):
         if not path or not Path(path).is_file():
             return
         crop = self._settings_crop()
+        try:
+            source_signature = self._source_signature(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Sobel not saved", str(exc))
+            return
         extractor = FeatureExtractor(device="cpu", sobel=self._sobel_from_controls())
         edge = extractor.edge_map(path, crop)
         if edge is None:
@@ -3224,9 +3247,26 @@ class MainWindow(QMainWindow):
         digest = hashlib.sha256(
             self._sobel_record_key(path).encode("utf-8")
         ).hexdigest()[:12]
-        output = SOBEL_OUTPUT_DIR / f"{Path(path).stem}_{digest}_sobel.png"
-        if not cv2.imwrite(str(output), edge):
-            QMessageBox.warning(self, "Sobel not saved", "Output file could not be written.")
+        # Never overwrite a reviewed image before its new workflow record commits.
+        # Older versions remain available if metadata cannot be saved or the app exits.
+        output = SOBEL_OUTPUT_DIR / f"{Path(path).stem}_{digest}_{uuid.uuid4().hex}_sobel.png"
+        output_created = False
+        try:
+            success, encoded = cv2.imencode(".png", edge)
+            if not success:
+                raise ValueError("Output image could not be encoded.")
+            if self._source_signature(path) != source_signature:
+                raise ValueError("Source image changed; review it again before saving.")
+            with output.open("xb") as stream:
+                output_created = True
+                stream.write(encoded.tobytes())
+        except (OSError, ValueError, cv2.error) as exc:
+            if output_created:
+                try:
+                    output.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            QMessageBox.warning(self, "Sobel not saved", str(exc))
             return
         key = self._sobel_record_key(path)
         previous = self.sobel_records.get(key, {})
@@ -3239,9 +3279,9 @@ class MainWindow(QMainWindow):
             and previous.get("crop", asdict(CropBox())) == asdict(crop)
         )
         self._invalidate_settings_trial()
-        self.sobel_records[key] = {
+        record = {
             "source_path": str(Path(path).resolve()),
-            "source": self._source_signature(path),
+            "source": source_signature,
             "sobel_parameters": self._sobel_parameter_record(),
             "crop": asdict(crop),
             "sobel_output": str(output.resolve()),
@@ -3258,11 +3298,18 @@ class MainWindow(QMainWindow):
             "labelled_at": previous.get("labelled_at", "") if same_source else "",
             "product_id": previous.get("product_id", "") if same_source else "",
         }
+        updated_records = {**self.sobel_records, key: record}
         try:
-            self._save_sobel_records()
-        except OSError as exc:
+            record["sobel_output_signature"] = self._source_signature(str(output))
+            self._save_sobel_records(updated_records)
+        except (OSError, ValueError, ProtectedPathError) as exc:
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                pass
             QMessageBox.warning(self, "Sobel status not saved", str(exc))
             return
+        self.sobel_records = updated_records
         self._refresh_image_selector_labels()
         self._update_image_workflow_status()
         if hasattr(self, "cmb_training_image"):
@@ -3436,28 +3483,30 @@ class MainWindow(QMainWindow):
 
         trained_at = datetime.now().isoformat(timespec="seconds")
         sobel_parameters = self._sobel_config_record(classifier.sobel)
-        for record in self.sobel_records.values():
+        updated_records = {key: dict(record) for key, record in self.sobel_records.items()}
+        for record in updated_records.values():
             if record.get("trained_model") == target.name:
                 record["trained"] = False
                 record["trained_model"] = ""
         for path in self.training_paths_in_progress:
             key = self._sobel_record_key(path)
-            record = dict(self.sobel_records.get(key, {}))
+            record = dict(updated_records.get(key, {}))
             record["trained"] = True
             record["trained_at"] = trained_at
             record["trained_model"] = target.name
             record["trained_label"] = record.get("training_label", "")
             record["trained_sobel_parameters"] = sobel_parameters
             record["trained_model_signature"] = self._source_signature(str(target))
-            self.sobel_records[key] = record
+            updated_records[key] = record
         try:
-            self._save_sobel_records()
-        except OSError as exc:
+            self._save_sobel_records(updated_records)
+        except (OSError, ValueError, ProtectedPathError) as exc:
             self._settings_training_failed(
                 f"Model saved, but image training status could not be saved: {exc}"
             )
             return
 
+        self.sobel_records = updated_records
         self.settings_classifier = classifier
         self.settings_model_name = target.name
         self.settings_model_error = ""
