@@ -113,6 +113,29 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.window.classifier = CutClassifier(crop=CropBox(12, 13, 40, 50))
         self.assertEqual(self.window._settings_crop(), classifier.crop)
 
+    def test_reference_editor_uses_selected_original_without_changing_model_or_gate(self):
+        self.model()
+        original_config = asdict(self.window.cfg)
+        original_gate = self.window.link.state
+        classifier = self.window.settings_classifier
+        with patch.object(ui, "ReferenceMeasurementDialog") as editor:
+            self.window._open_reference_measurement()
+            self.assertEqual(editor.call_args.args[0], self.window._current_training_image_path())
+            editor.return_value.exec.assert_called_once()
+        self.assertEqual(asdict(self.window.cfg), original_config)
+        self.assertEqual(self.window.link.state, original_gate)
+        self.assertIs(self.window.settings_classifier, classifier)
+
+    def test_reference_editor_is_blocked_during_inspection_or_training(self):
+        with patch.object(ui, "ReferenceMeasurementDialog") as editor:
+            self.window.auto_running = True
+            self.window._open_reference_measurement()
+            self.window.auto_running = False
+            self.window.training_worker = Mock()
+            self.window._open_reference_measurement()
+            self.window.training_worker = None
+        editor.assert_not_called()
+
     def test_changed_saved_sobel_or_cleared_label_requires_retraining(self):
         self.model()
         path = self.window.settings_image_paths[0]

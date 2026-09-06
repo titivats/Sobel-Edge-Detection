@@ -55,6 +55,51 @@ identity metadata require retraining. Inference preserves checkpoint preprocessi
 
 ## Model screening and current limits
 
+### Reference edge measurement (experimental)
+
+In **SETTING > 3 VISION TRANSFORMER**, select an image and choose
+**ADJUST REFERENCE LINE** in the reference measurement card. This opens a separate
+editor; no trained model is required. It does **not** modify production GOOD/NG,
+labels, Sobel preprocessing or model weights.
+
+1. Click **DRAW LINE** and drag along the nominal, known-good PCB boundary.
+   Drag the endpoints to change its angle; MOVE buttons shift it one pixel normal
+   to the line. Do not fit the reference to a defect. Wheel zooms; dragging away
+   from the endpoints pans; **FIT IMAGE** restores the view.
+2. Use **FLIP PCB SIDE** so the pink arrow points into material. Select the
+   appropriate bright/dark boundary polarity. Adjust the search band and minimum
+   contrast while checking the detected edge against the Original image.
+3. Blue is the reference. Red marks inward deviation over the trial limit;
+   orange marks protrusion over the limit. Green is within the trial limits,
+   not a production GOOD verdict. Maximum deviations and edge coverage update
+   automatically. Unreliable or clipped scans make the overall measurement
+   invalid; displayed extrema then describe only the accepted portions.
+4. Measurements start in original-resolution pixels. Enter separate X/Y mm/px
+   scales and explicitly verify them against a known dimension at the actual
+   PCB plane to enable mm. No default machine scale is assumed. Confirm manual
+   reference alignment separately. Neither confirmation is restored on reopening.
+5. **SAVE REFERENCE FOR THIS IMAGE** saves the line and controls to the local
+   `reference_lines.json`. References are source-signature-bound and per image in
+   this prototype. They are not automatically transferred across boards or cut
+   points. There is no automatic registration or curved-reference support yet.
+
+The detector samples grayscale material transitions after a fixed 3x3 blur,
+independently of the adjustable Sobel/ViT preprocessing. It measures visible 2-D
+outline deviation, not out-of-plane burr height. Sampling is at most one pixel
+apart along a segment up to 4095 pixels long. Interpolated decimal output is not
+an accuracy guarantee. Reflections, copper tracks and solder-mask boundaries can
+be confused with the physical PCB edge. Validate optical calibration, detection,
+repeatability and tolerances before considering any production integration.
+
+To open just the trial editor without starting inspection:
+
+```powershell
+cd RouterVisionStudio
+..\venv\Scripts\python.exe -m router_vision.reference_ui "D:\path\to\image.bmp"
+```
+
+### Classifier screening
+
 The development screening gate requires at least 80% overall validation accuracy,
 both classes in validation, and at least 50% recall for each class. Failed training
 does not overwrite the previous model. Unreadable labeled inputs abort training.

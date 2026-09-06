@@ -23,6 +23,8 @@ RouterVisionStudio/labels.json
 RouterVisionStudio/positions.json
 RouterVisionStudio/sobel_workflow.json
 RouterVisionStudio/sobel_workflow.tmp
+RouterVisionStudio/reference_lines.json
+RouterVisionStudio/.reference_lines.json.*.tmp
 RouterVisionStudio/sobel_finetune/
 RouterVisionStudio/models/
 

@@ -67,6 +67,7 @@ from router_vision.machine import Run, attach_pictures, available_days, load_run
 from router_vision.model import (
     CropBox, CutClassifier, FeatureExtractor, SobelConfig, model_quality_error,
 )
+from router_vision.reference_ui import ReferenceMeasurementDialog
 from router_vision.production import (
     STATUS_GOOD,
     STATUS_NG,
@@ -1468,6 +1469,25 @@ class MainWindow(QMainWindow):
         workflow_layout.addWidget(label_card)
         workflow_layout.addWidget(train_card)
         workflow_layout.addWidget(test_card)
+        reference_card = QFrame()
+        reference_card.setObjectName("sourceCard")
+        reference_layout = QVBoxLayout(reference_card)
+        reference_title = QLabel("4. REFERENCE EDGE MEASUREMENT (TRIAL)")
+        reference_title.setWordWrap(True)
+        reference_title.setStyleSheet("color:#1d4ed8; font-weight:800;")
+        reference_help = QLabel(
+            "Adjust a nominal edge on the selected Original image. Measure inward cuts "
+            "and protrusions in pixels, or mm after scale verification. Independent from GOOD / NG."
+        )
+        reference_help.setWordWrap(True)
+        self.btn_reference = QPushButton("ADJUST REFERENCE LINE")
+        self.btn_reference.setObjectName("outline")
+        self.btn_reference.setEnabled(False)
+        self.btn_reference.clicked.connect(self._open_reference_measurement)
+        reference_layout.addWidget(reference_title)
+        reference_layout.addWidget(reference_help)
+        reference_layout.addWidget(self.btn_reference)
+        workflow_layout.addWidget(reference_card)
         workflow_layout.addStretch(1)
 
         workflow_scroll = QScrollArea()
@@ -2932,6 +2952,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "lbl_trial_preview"):
             return
         path = self._current_training_image_path()
+        if hasattr(self, "btn_reference"):
+            self.btn_reference.setEnabled(bool(path and Path(path).is_file()))
         if not path or not Path(path).is_file():
             self.trial_preview_pixmap = None
             self.lbl_trial_preview.setMinimumSize(1, 200)
@@ -3007,6 +3029,24 @@ class MainWindow(QMainWindow):
             "border-radius:6px; padding:6px 8px; font-weight:800;"
         )
         self._fit_trial_preview()
+
+    def _open_reference_measurement(self) -> None:
+        if self._settings_job_busy() or self.worker is not None or self.auto_running:
+            return
+        path = self._current_training_image_path()
+        if not path:
+            return
+        try:
+            dialog = ReferenceMeasurementDialog(
+                path, APP_DIR / "reference_lines.json", self._settings_protected_roots(), self
+            )
+        except (OSError, ValueError, cv2.error) as exc:
+            QMessageBox.warning(self, "Reference image not available", str(exc))
+            return
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _settings_workflow_changed(self, index: int) -> None:
         if index == 1:
