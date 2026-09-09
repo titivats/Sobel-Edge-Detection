@@ -3,7 +3,6 @@ from __future__ import annotations
 import runpy
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 LEGACY_SCRIPT = PROJECT_ROOT / "tools" / "sobel_measure.py"
 

@@ -35,7 +35,7 @@ PICTURE_STAMP = "%Y%m%d_%H%M%S"
 @dataclass
 class Run:
     result_file: str
-    sn: str                # panel serial, from column 0 of the panel row
+    sn: str  # panel serial, from column 0 of the panel row
     run_id: str
     product_id: str
     table: str

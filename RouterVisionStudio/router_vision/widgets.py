@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import theme
 
@@ -65,8 +74,9 @@ class HeaderBar(QFrame):
         text_box.addWidget(self.detail)
         layout.addLayout(text_box)
 
-    def set_status(self, message: str, colour: str = theme.ONLINE_GREEN,
-                   detail: str | None = None) -> None:
+    def set_status(
+        self, message: str, colour: str = theme.ONLINE_GREEN, detail: str | None = None
+    ) -> None:
         self.status.setText(message)
         self.dot.set_colour(colour)
         if detail is not None:
@@ -80,7 +90,8 @@ class KpiCard(QFrame):
         super().__init__()
         self.setStyleSheet(
             f"QFrame {{ background:{theme.PANEL_2}; border:1px solid {theme.BORDER};"
-            f"border-radius:4px; }}")
+            f"border-radius:4px; }}"
+        )
         self.setFixedWidth(112)
 
         layout = QVBoxLayout(self)
@@ -111,7 +122,8 @@ class Card(QFrame):
         super().__init__()
         self.setStyleSheet(
             f"QFrame {{ background:{theme.PANEL}; border:1px solid {theme.BORDER};"
-            f"border-radius:4px; }}")
+            f"border-radius:4px; }}"
+        )
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(14, 12, 14, 12)
         if title:
@@ -171,13 +183,13 @@ class PosCard(QFrame):
         self.thumb.setFixedSize(self.THUMB_W, self.THUMB_H)
         self.thumb.setStyleSheet(
             f"color:{theme.MUTED}; background:{theme.PANEL_2};"
-            f"border:1px solid {theme.BORDER}; border-radius:3px;")
+            f"border:1px solid {theme.BORDER}; border-radius:3px;"
+        )
         layout.addWidget(self.thumb)
 
         self.width_label = QLabel("-")
         self.width_label.setFont(QFont("Segoe UI Semibold", 14))
-        self.width_label.setStyleSheet(
-            f"color:{theme.TEXT}; border:none; background:transparent;")
+        self.width_label.setStyleSheet(f"color:{theme.TEXT}; border:none; background:transparent;")
         layout.addWidget(self.width_label)
 
         self.dev = QLabel("no baseline")
@@ -199,22 +211,30 @@ class PosCard(QFrame):
             self._apply_frame()
 
     def _apply_frame(self) -> None:
-        border = (f"2px solid {theme.ACCENT}" if self._selected
-                  else f"1px solid {theme.BORDER}")
+        border = f"2px solid {theme.ACCENT}" if self._selected else f"1px solid {theme.BORDER}"
         pad = "9px" if self._selected else "10px"
         self.setStyleSheet(
             f"PosCard {{ background:{self._tint}; border:{border};"
-            f"border-radius:4px; margin:{pad}0px; }}")
+            f"border-radius:4px; margin:{pad}0px; }}"
+        )
 
-    def show_record(self, *, caption: str, width_text: str, dev_text: str,
-                    verdict: str, verdict_colour: str, foot: str,
-                    tint: str, image_path: str) -> None:
+    def show_record(
+        self,
+        *,
+        caption: str,
+        width_text: str,
+        dev_text: str,
+        verdict: str,
+        verdict_colour: str,
+        foot: str,
+        tint: str,
+        image_path: str,
+    ) -> None:
         self.caption.setText(caption)
         self.width_label.setText(width_text)
         self.dev.setText(dev_text)
         self.verdict.setText(verdict)
-        self.verdict.setStyleSheet(
-            f"color:{verdict_colour}; border:none; background:transparent;")
+        self.verdict.setStyleSheet(f"color:{verdict_colour}; border:none; background:transparent;")
         self.foot.setText(foot)
         if tint != self._tint:
             self._tint = tint
@@ -225,9 +245,11 @@ class PosCard(QFrame):
             if pix.isNull():
                 self.thumb.setText("no image")
             else:
-                self.thumb.setPixmap(pix.scaled(self.THUMB_W, self.THUMB_H,
-                                                Qt.KeepAspectRatio,
-                                                Qt.SmoothTransformation))
+                self.thumb.setPixmap(
+                    pix.scaled(
+                        self.THUMB_W, self.THUMB_H, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                )
 
     # ------------------------------------------------------------------
     def mousePressEvent(self, event):  # noqa: N802
@@ -245,16 +267,24 @@ class PosCard(QFrame):
 
 # As drawn by vision.render_overlay(), in the order it paints them.
 OVERLAY_MARKS = (
-    ("line", "#00ffff", "Cyan lines",
-     "the edges of the slot as measured in this picture; a side that is a tab or "
-     "a contour rather than a straight edge is left out"),
-    ("dots", "#ffff00", "Yellow dots",
-     "where each scan row found the edge - they should form a straight line"),
+    (
+        "line",
+        "#00ffff",
+        "Cyan lines",
+        "the edges of the slot as measured in this picture; a side that is a tab or "
+        "a contour rather than a straight edge is left out",
+    ),
+    (
+        "dots",
+        "#ffff00",
+        "Yellow dots",
+        "where each scan row found the edge - they should form a straight line",
+    ),
 )
 
 SWATCH_W = 34
 SWATCH_H = 12
-PICTURE_GREY = "#4a4a4a"          # inspection pictures are dark, so is the key
+PICTURE_GREY = "#4a4a4a"  # inspection pictures are dark, so is the key
 
 
 def mark_swatch(style: str, colour: str, w: int = SWATCH_W, h: int = SWATCH_H) -> QPixmap:
@@ -292,7 +322,8 @@ class OverlayLegend(QFrame):
         self._parent_window = parent_window
         self.setStyleSheet(
             f"QFrame {{ background:{theme.PANEL_2}; border:1px solid {theme.BORDER};"
-            f"border-radius:3px; }}")
+            f"border-radius:3px; }}"
+        )
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 6, 10, 6)
@@ -331,7 +362,6 @@ class OverlayLegend(QFrame):
         grid.setColumnStretch(2, 1)
         outer.addLayout(grid)
 
-
     def _open_help(self):
         OverlayHelpDialog(self._parent_window or self.window()).exec()
 
@@ -345,7 +375,7 @@ class OverlayDiagram(QWidget):
     """
 
     W, H = 560, 300
-    PIC = (30, 26, 500, 190)          # x, y, w, h of the pretend picture
+    PIC = (30, 26, 500, 190)  # x, y, w, h of the pretend picture
     LEFT_EDGE, RIGHT_EDGE = 205, 355  # measured edges, px in this widget
 
     def __init__(self):
@@ -362,8 +392,7 @@ class OverlayDiagram(QWidget):
         p.fillRect(x, y, w, h, QColor("#3f3f3f"))
         p.fillRect(x, y, self.LEFT_EDGE - x, h, QColor("#1e4d3b"))
         p.fillRect(self.RIGHT_EDGE, y, x + w - self.RIGHT_EDGE, h, QColor("#1e4d3b"))
-        p.fillRect(self.LEFT_EDGE, y, self.RIGHT_EDGE - self.LEFT_EDGE, h,
-                   QColor("#161616"))
+        p.fillRect(self.LEFT_EDGE, y, self.RIGHT_EDGE - self.LEFT_EDGE, h, QColor("#161616"))
         p.setPen(QPen(QColor(theme.BORDER), 1))
         p.drawRect(x, y, w, h)
 
@@ -403,10 +432,10 @@ class OverlayDiagram(QWidget):
 
         p.setPen(QColor(theme.MUTED))
         p.setFont(QFont("Segoe UI", 8))
-        p.drawText(x, base + 34,
-                   "dWidth and dShift compare these two numbers with the calibrated")
-        p.drawText(x, base + 50,
-                   "baseline, which is held as a number and not drawn on the picture.")
+        p.drawText(x, base + 34, "dWidth and dShift compare these two numbers with the calibrated")
+        p.drawText(
+            x, base + 50, "baseline, which is held as a number and not drawn on the picture."
+        )
 
     @staticmethod
     def _span(p, x_from: int, x_to: int, y: int) -> None:
@@ -424,44 +453,62 @@ class OverlayHelpDialog(QDialog):
     """The long version: how a picture turns into Width mm, dWidth and dShift."""
 
     STEPS = (
-        ("1. Find the board", None,
-         "Solder mask is green, so every pixel that is clearly more green than red "
-         "counts as board and everything else counts as cut, shadow or debris. The "
-         "three green thresholds on the Configuration tab decide how strict that is."),
-        ("2. Scan row by row", None,
-         "Nothing is scanned by hardware here - the picture is already taken, and a "
-         "'scan row' is simply one horizontal row of its pixels. Every row of the "
-         "picture is scanned, about a thousand of them, which is what the Scan Y "
-         "and Scan row step settings on the Configuration tab control. On each row "
-         "the tool starts at the middle of the picture and walks outward, one pixel "
-         "at a time, until it meets board on the left and on the right. The slot "
-         "therefore has to sit near the middle of the frame, and a row that runs off "
-         "the edge without finding board is thrown away - that is the difference "
-         "between the two numbers in 'scan  n/m rows'."),
-        ("3. Mark every hit", "dots",
-         "Each of those two hits is drawn as a yellow dot - a sample of them, since "
-         "one dot per row would merge into a solid bar. Two straight columns of "
-         "dots mean a clean edge. Dots that wander or thin out mean burrs, debris or "
-         "weak contrast - the 'scan  n/m rows  spread' line under the picture puts a "
-         "number on it, and below 'Min valid rows' the picture is not measured at all."),
-        ("4. Take the median", "line",
-         "The cyan lines are the median of the dots on each side, which is what makes "
-         "one burr or one speck harmless. The gap between them is the slot width: "
-         "'Width mm' on the tile. When one side is not a straight edge - a breakaway "
-         "tab or a contour cut - it is dropped from both the drawing and the sum, the "
-         "tile says 'left edge only', and there is no width to report; only how far "
-         "that straight edge has moved."),
-        ("5. Compare with the baseline", None,
-         "Calibration measured this same position on known-good panels and stored where "
-         "its edges sat. That baseline is a stored number, not drawn on the picture. "
-         "dWidth is measured width minus baseline width - the slot got wider or "
-         "narrower. dShift is the measured edge minus the baseline edge - the cut moved "
-         "sideways. 'no baseline yet' on a tile means this position was never "
-         "calibrated; run calibration on the Configuration tab."),
-        ("6. Judge it", None,
-         "A tile turns red when dWidth or dShift passes the tolerance set on the "
-         "Configuration tab, or when the trained model calls the picture NG. Green "
-         "means both agree it is fine, amber means there is nothing to compare against."),
+        (
+            "1. Find the board",
+            None,
+            "Solder mask is green, so every pixel that is clearly more green than red "
+            "counts as board and everything else counts as cut, shadow or debris. The "
+            "three green thresholds on the Configuration tab decide how strict that is.",
+        ),
+        (
+            "2. Scan row by row",
+            None,
+            "Nothing is scanned by hardware here - the picture is already taken, and a "
+            "'scan row' is simply one horizontal row of its pixels. Every row of the "
+            "picture is scanned, about a thousand of them, which is what the Scan Y "
+            "and Scan row step settings on the Configuration tab control. On each row "
+            "the tool starts at the middle of the picture and walks outward, one pixel "
+            "at a time, until it meets board on the left and on the right. The slot "
+            "therefore has to sit near the middle of the frame, and a row that runs off "
+            "the edge without finding board is thrown away - that is the difference "
+            "between the two numbers in 'scan  n/m rows'.",
+        ),
+        (
+            "3. Mark every hit",
+            "dots",
+            "Each of those two hits is drawn as a yellow dot - a sample of them, since "
+            "one dot per row would merge into a solid bar. Two straight columns of "
+            "dots mean a clean edge. Dots that wander or thin out mean burrs, debris or "
+            "weak contrast - the 'scan  n/m rows  spread' line under the picture puts a "
+            "number on it, and below 'Min valid rows' the picture is not measured at all.",
+        ),
+        (
+            "4. Take the median",
+            "line",
+            "The cyan lines are the median of the dots on each side, which is what makes "
+            "one burr or one speck harmless. The gap between them is the slot width: "
+            "'Width mm' on the tile. When one side is not a straight edge - a breakaway "
+            "tab or a contour cut - it is dropped from both the drawing and the sum, the "
+            "tile says 'left edge only', and there is no width to report; only how far "
+            "that straight edge has moved.",
+        ),
+        (
+            "5. Compare with the baseline",
+            None,
+            "Calibration measured this same position on known-good panels and stored where "
+            "its edges sat. That baseline is a stored number, not drawn on the picture. "
+            "dWidth is measured width minus baseline width - the slot got wider or "
+            "narrower. dShift is the measured edge minus the baseline edge - the cut moved "
+            "sideways. 'no baseline yet' on a tile means this position was never "
+            "calibrated; run calibration on the Configuration tab.",
+        ),
+        (
+            "6. Judge it",
+            None,
+            "A tile turns red when dWidth or dShift passes the tolerance set on the "
+            "Configuration tab, or when the trained model calls the picture NG. Green "
+            "means both agree it is fine, amber means there is nothing to compare against.",
+        ),
     )
 
     def __init__(self, parent=None):
@@ -482,7 +529,8 @@ class OverlayHelpDialog(QDialog):
         lead = QLabel(
             "Every picture is measured the same way, with no model involved: it is "
             "plain colour thresholding plus a median. The marks drawn on the picture "
-            "are the working of that sum.")
+            "are the working of that sum."
+        )
         lead.setWordWrap(True)
         lead.setStyleSheet(f"color:{theme.MUTED}; border:none; background:transparent;")
         layout.addWidget(lead)

@@ -87,9 +87,7 @@ def measure_intrusion(
         horizontal,
     )
 
-    selected_sobel_edges = (
-        sobel_x_edges if detected_orientation == "vertical" else sobel_y_edges
-    )
+    selected_sobel_edges = sobel_x_edges if detected_orientation == "vertical" else sobel_y_edges
     display_edge = thicken_edge_for_display(
         selected_sobel_edges,
         display_edge_thickness,

@@ -64,7 +64,11 @@ def classify_panel(
         threshold = float(good_confidence_min)
     except (TypeError, ValueError, OverflowError):
         threshold = math.nan
-    if isinstance(good_confidence_min, bool) or not math.isfinite(threshold) or not 0.5 <= threshold <= 1.0:
+    if (
+        isinstance(good_confidence_min, bool)
+        or not math.isfinite(threshold)
+        or not 0.5 <= threshold <= 1.0
+    ):
         result.note = "invalid GOOD confidence threshold (expected 50% to 100%)"
         return result
     raw_predictions = classifier.predict(run.pictures, cancelled=cancelled)
@@ -134,10 +138,7 @@ def classify_panel(
     if ng:
         issues.append("NG predicted at cut point " + _indices(ng))
     if uncertain:
-        issues.append(
-            f"GOOD confidence below {threshold:.1%} at cut point "
-            + _indices(uncertain)
-        )
+        issues.append(f"GOOD confidence below {threshold:.1%} at cut point " + _indices(uncertain))
 
     # Report every issue found on this Panel/SN. Any data-quality or confidence
     # problem makes the panel a FAULT; a cleanly classified NG-only panel is NG.
@@ -151,9 +152,7 @@ def classify_panel(
     else:
         result.status = STATUS_GOOD
         lowest = min((d.confidence for d in result.details), default=0.0)
-        result.note = (
-            f"all {result.checked} cut points GOOD; lowest confidence {lowest:.1%}"
-        )
+        result.note = f"all {result.checked} cut points GOOD; lowest confidence {lowest:.1%}"
     return result
 
 

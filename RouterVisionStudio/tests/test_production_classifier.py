@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from router_vision.production import STATUS_FAULT, STATUS_GOOD, STATUS_NG, classify_panel
+from router_vision.production import (
+    STATUS_FAULT,
+    STATUS_GOOD,
+    STATUS_NG,
+    classify_panel,
+)
 
 
 class FakeClassifier:
@@ -26,9 +31,9 @@ def run(*, pictures=3, passed=True):
 
 class ProductionClassifierTests(unittest.TestCase):
     def test_invalid_configured_threshold_fails_closed(self):
-        for threshold in (float("nan"), float("inf"), -.1, 1.2, True, "invalid"):
+        for threshold in (float("nan"), float("inf"), -0.1, 1.2, True, "invalid"):
             with self.subTest(threshold=threshold):
-                classifier = FakeClassifier([("GOOD", .99)] * 3)
+                classifier = FakeClassifier([("GOOD", 0.99)] * 3)
                 result = classify_panel(classifier, run(), 3, threshold)
                 self.assertEqual(result.status, STATUS_FAULT)
                 self.assertIn("invalid GOOD confidence threshold", result.note)

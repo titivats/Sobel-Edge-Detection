@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 import torch.nn as nn
-
 from router_vision.guard import ProtectedPathError
 from router_vision.model import (
     BACKBONES,

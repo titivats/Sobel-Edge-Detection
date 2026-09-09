@@ -1,4 +1,5 @@
 """Interactive, explicitly non-production reference-line measurement editor."""
+
 from __future__ import annotations
 
 import math
@@ -9,12 +10,27 @@ import numpy as np
 from PySide6.QtCore import QLocale, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGraphicsScene,
-    QGraphicsView, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
-    QSpinBox, QSplitter, QVBoxLayout, QWidget,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGraphicsScene,
+    QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .guard import ProtectedPathError
+from .recipe_reference import validate_recipe_reference
+from .recipe_reference_ui import RecipeLineDialog
 from .reference import ReferenceStore, image_signature, measure_reference, normal_scale
 
 
@@ -29,13 +45,18 @@ class ReferenceCanvas(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        self.scene().addPixmap(QPixmap.fromImage(QImage(
-            rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888
-        ).copy()))
+        self.scene().addPixmap(
+            QPixmap.fromImage(
+                QImage(
+                    rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888
+                ).copy()
+            )
+        )
         self.image_rect = self.scene().itemsBoundingRect()
         self.setSceneRect(self.image_rect)
         self.line = None
         self.drawing = False
+        self.line_locked = False
         self.drag_endpoint = None
         self.overlays = []
         self.zoomed = False
@@ -59,11 +80,13 @@ class ReferenceCanvas(QGraphicsView):
 
     def _point(self, event):
         p = self.mapToScene(event.position().toPoint())
-        return [float(np.clip(p.x(), 0, self.image_rect.width() - 1)),
-                float(np.clip(p.y(), 0, self.image_rect.height() - 1))]
+        return [
+            float(np.clip(p.x(), 0, self.image_rect.width() - 1)),
+            float(np.clip(p.y(), 0, self.image_rect.height() - 1)),
+        ]
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and not self.line_locked:
             if self.drawing:
                 self.line = [self._point(event), self._point(event)]
                 self.drag_endpoint = 1
@@ -118,18 +141,30 @@ class ReferenceCanvas(QGraphicsView):
             return
         normal = side * np.array([-vector[1], vector[0]]) / length
         for offset in (-radius, radius):
-            self.segment(ends[0] + normal * offset, ends[1] + normal * offset, "#64748b", dashed=True)
+            self.segment(
+                ends[0] + normal * offset, ends[1] + normal * offset, "#64748b", dashed=True
+            )
         if profile is not None:
             for i in range(1, len(profile.points)):
                 if not (profile.accepted[i - 1] and profile.accepted[i]):
                     continue
                 value = profile.deviations[i]
-                color = "#ef4444" if value > inward_limit else "#f59e0b" if value < -protrusion_limit else "#22c55e"
+                color = (
+                    "#ef4444"
+                    if value > inward_limit
+                    else "#f59e0b"
+                    if value < -protrusion_limit
+                    else "#22c55e"
+                )
                 self.segment(profile.points[i - 1], profile.points[i], color, 2)
             for positive, color in ((True, "#ef4444"), (False, "#f59e0b")):
                 indices = np.flatnonzero(profile.accepted)
                 if len(indices):
-                    selected = indices[np.argmax(profile.deviations[indices]) if positive else np.argmin(profile.deviations[indices])]
+                    selected = indices[
+                        np.argmax(profile.deviations[indices])
+                        if positive
+                        else np.argmin(profile.deviations[indices])
+                    ]
                     self.segment(profile.anchors[selected], profile.points[selected], color, 3)
         self.segment(*ends, "#38bdf8", 2)
         center = ends.mean(axis=0)
@@ -141,14 +176,29 @@ class ReferenceCanvas(QGraphicsView):
         # Endpoint handles remain the same screen size at all zoom levels.
         radius_px = 5 / max(0.01, self.transform().m11())
         for x, y in ends:
-            self.overlays.append(self.scene().addEllipse(
-                x - radius_px, y - radius_px, 2 * radius_px, 2 * radius_px,
-                QPen(QColor("#ffffff")), QColor("#0284c7")
-            ))
+            self.overlays.append(
+                self.scene().addEllipse(
+                    x - radius_px,
+                    y - radius_px,
+                    2 * radius_px,
+                    2 * radius_px,
+                    QPen(QColor("#ffffff")),
+                    QColor("#0284c7"),
+                )
+            )
 
 
 class ReferenceMeasurementDialog(QDialog):
-    def __init__(self, image_path, store_path, protected=(), parent=None):
+    def __init__(
+        self,
+        image_path,
+        store_path,
+        protected=(),
+        parent=None,
+        *,
+        recipe_dir=None,
+        recipe_path=None,
+    ):
         super().__init__(parent)
         self.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
         self.setWindowTitle("AVTR | Reference edge measurement - EXPERIMENTAL")
@@ -162,6 +212,9 @@ class ReferenceMeasurementDialog(QDialog):
         if self.source != image_signature(image_path):
             raise ValueError("Image changed while opening; try again.")
         self.store = ReferenceStore(Path(store_path), protected)
+        self.recipe_dir = recipe_dir
+        self.recipe_path = recipe_path
+        self.recipe_reference = None
         self.side = 1
         self.profile = None
         self.display_scale = 1.0
@@ -185,30 +238,42 @@ class ReferenceMeasurementDialog(QDialog):
         controls = QWidget()
         column = QVBoxLayout(controls)
         instructions = QLabel(
-            "1. Draw along a known-good nominal PCB edge.\n"
-            "2. Drag endpoints / nudge the line. Point the pink arrow INTO the PCB.\n"
-            "3. Check the detected edge, then confirm alignment.\n"
-            "Wheel: zoom. Drag away from endpoints: pan."
+            "Choose a recipe line, check it on the photo, then save.\n"
+            "Blue = reference. Pink arrow = PCB material side."
         )
         instructions.setWordWrap(True)
         column.addWidget(instructions)
+        self.recipe_button = QPushButton("CHOOSE RECIPE LINE")
+        self.recipe_button.clicked.connect(self.open_recipe)
+        column.addWidget(self.recipe_button)
+        self.reference_source = QLabel("Reference source: none")
+        self.reference_source.setWordWrap(True)
+        column.addWidget(self.reference_source)
+        self.advanced_button = QPushButton("ADVANCED MEASUREMENT SETTINGS")
+        self.advanced_button.setCheckable(True)
+        self.advanced_panel = QWidget()
+        advanced = QVBoxLayout(self.advanced_panel)
+        self.advanced_panel.hide()
+        self.advanced_button.toggled.connect(self.advanced_panel.setVisible)
         actions = QHBoxLayout()
-        self.draw_button = QPushButton("DRAW LINE")
+        self.draw_button = QPushButton("MANUAL LINE")
         self.draw_button.clicked.connect(self.draw_line)
         fit = QPushButton("FIT IMAGE")
         fit.clicked.connect(self.canvas.fit_image)
         actions.addWidget(self.draw_button)
-        actions.addWidget(fit)
-        column.addLayout(actions)
-        flip = QPushButton("FLIP PCB SIDE (PINK ARROW)")
+        column.addWidget(fit)
+        advanced.addLayout(actions)
+        flip = QPushButton("SWITCH PCB SIDE")
         flip.clicked.connect(self.flip_side)
         column.addWidget(flip)
         nudge = QHBoxLayout()
+        self.nudge_buttons = []
         for text, direction in (("MOVE -1 px", -1), ("MOVE +1 px", 1)):
             button = QPushButton(text)
             button.clicked.connect(lambda _=False, sign=direction: self.nudge(sign))
             nudge.addWidget(button)
-        column.addLayout(nudge)
+            self.nudge_buttons.append(button)
+        advanced.addLayout(nudge)
         form = QFormLayout()
         self.radius = QSpinBox()
         self.radius.setRange(4, 200)
@@ -224,37 +289,49 @@ class ReferenceMeasurementDialog(QDialog):
         form.addRow("Search each side", self.radius)
         form.addRow("Minimum edge contrast", self.contrast)
         form.addRow("Boundary polarity", self.polarity)
-        form.addRow("Inward limit", self.inward)
-        form.addRow("Protrusion limit", self.protrusion)
-        column.addLayout(form)
+        advanced.addLayout(form)
+        limits = QFormLayout()
+        limits.addRow("Allowed inward cut", self.inward)
+        limits.addRow("Allowed protrusion", self.protrusion)
+        column.addLayout(limits)
         self.aligned = QCheckBox("I checked the nominal reference alignment")
         column.addWidget(self.aligned)
-        scale_note = QLabel("mm is disabled until you verify X/Y scale for this camera, image resolution and PCB plane.")
+        scale_note = QLabel(
+            "mm is disabled until you verify X/Y scale for this camera, image resolution and PCB plane."
+        )
         scale_note.setWordWrap(True)
-        column.addWidget(scale_note)
+        advanced.addWidget(scale_note)
         scale_form = QFormLayout()
         self.scale_x = self.spin(0, 10, 0, 8)
         self.scale_y = self.spin(0, 10, 0, 8)
         scale_form.addRow("X scale (mm / px)", self.scale_x)
         scale_form.addRow("Y scale (mm / px)", self.scale_y)
-        column.addLayout(scale_form)
+        advanced.addLayout(scale_form)
         self.calibrated = QCheckBox("Scale verified against a known dimension")
-        column.addWidget(self.calibrated)
-        self.result = QLabel("Draw a reference line to begin.")
+        advanced.addWidget(self.calibrated)
+        self.result = QLabel(
+            "Choose a recipe line to begin. If camera setup is missing, the next screen will explain what is needed."
+        )
         self.result.setWordWrap(True)
         self.result.setMinimumHeight(90)
-        self.result.setStyleSheet("background:#e2e8f0; color:#0f172a; padding:10px; font-weight:700;")
+        self.result.setStyleSheet(
+            "background:#e2e8f0; color:#0f172a; padding:10px; font-weight:700;"
+        )
         layout.insertWidget(2, self.result)
-        legend = QLabel("Blue: reference | Pink: PCB side\nRed: inward over limit | Orange: protrusion over limit\nGreen: detected edge within trial limits\nGray dashed: search band")
+        legend = QLabel(
+            "Blue: reference | Pink: PCB side\nRed: inward over limit | Orange: protrusion over limit\nGreen: detected edge within trial limits\nGray dashed: search band"
+        )
         legend.setWordWrap(True)
         column.addWidget(legend)
         note = QLabel(
             "2-D visible edge only; not burr height. Reflections or solder-mask edges may be mistaken for the PCB edge. "
-            "No automatic alignment. Saved for this image only. Not production-qualified."
+            "Recipe mapping must match this camera view. Saved for this image only. Not production-qualified."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#92400e;")
-        column.addWidget(note)
+        advanced.addWidget(note)
+        column.addWidget(self.advanced_button)
+        column.addWidget(self.advanced_panel)
         self.save_button = QPushButton("SAVE REFERENCE FOR THIS IMAGE")
         self.save_button.clicked.connect(self.save_reference)
         self.saved_status = QLabel("NOT SAVED")
@@ -312,16 +389,62 @@ class ReferenceMeasurementDialog(QDialog):
         self.changed()
 
     def draw_line(self):
+        self.set_recipe_source(None)
         self.canvas.drawing = True
         self.canvas.setCursor(Qt.CrossCursor)
-        self.result.setText("Drag from the start to the end of the nominal edge; do not follow a defect.")
+        self.result.setText(
+            "Drag from the start to the end of the nominal edge; do not follow a defect."
+        )
+
+    def set_recipe_source(self, record):
+        self.recipe_reference = record
+        self.canvas.line_locked = record is not None
+        self.canvas.drawing = False
+        self.canvas.drag_endpoint = None
+        self.scale_x.setEnabled(record is None)
+        self.scale_y.setEnabled(record is None)
+        for button in self.nudge_buttons:
+            button.setEnabled(record is None)
+        self.reference_source.setText(
+            f"Recipe: {Path(record['path']).name}\nEdge offset: {record['offset_mm']:+.6f} mm | Endpoints locked"
+            if record
+            else "Reference source: manual"
+        )
+
+    def open_recipe(self):
+        dialog = RecipeLineDialog(
+            self.image.shape,
+            self.recipe_dir,
+            self,
+            previous=self.recipe_reference,
+            image=self.image,
+        )
+        try:
+            if self.recipe_reference is None and self.recipe_path:
+                dialog.load_recipe(self.recipe_path)
+            if dialog.exec() == QDialog.Accepted:
+                self.apply_recipe_reference(dialog.reference)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "Recipe reference not available", str(exc))
+        finally:
+            dialog.deleteLater()
+
+    def apply_recipe_reference(self, record):
+        line = validate_recipe_reference(record, self.image.shape)
+        self.canvas.line = line
+        self.set_recipe_source(record)
+        self.scale_x.setValue(record["mapping"]["scale_x"])
+        self.scale_y.setValue(record["mapping"]["scale_y"])
+        self.calibrated.setChecked(False)
+        self.line_edited()
+        self.measure()
 
     def flip_side(self):
         self.side *= -1
         self.line_edited()
 
     def nudge(self, amount):
-        if self.canvas.line is None:
+        if self.canvas.line is None or self.recipe_reference is not None:
             return
         ends = np.array(self.canvas.line)
         vector = ends[1] - ends[0]
@@ -343,13 +466,21 @@ class ReferenceMeasurementDialog(QDialog):
         if line is None:
             self.save_button.setEnabled(False)
             return
-        self.profile = measure_reference(self.image, line, side=self.side, radius=self.radius.value(),
-                                         min_contrast=self.contrast.value(), polarity=1 if self.polarity.currentIndex() == 0 else -1)
+        self.profile = measure_reference(
+            self.image,
+            line,
+            side=self.side,
+            radius=self.radius.value(),
+            min_contrast=self.contrast.value(),
+            polarity=1 if self.polarity.currentIndex() == 0 else -1,
+        )
         scale = 1.0
         unit = "px"
         if self.calibrated.isChecked():
             try:
-                scale = normal_scale(self.profile.normal, self.scale_x.value(), self.scale_y.value())
+                scale = normal_scale(
+                    self.profile.normal, self.scale_x.value(), self.scale_y.value()
+                )
                 unit = "mm"
             except ValueError:
                 self.calibrated.blockSignals(True)
@@ -366,49 +497,107 @@ class ReferenceMeasurementDialog(QDialog):
         self.display_scale = scale
         for spin in (self.inward, self.protrusion):
             spin.setSuffix(" " + unit)
-        self.canvas.overlay(self.profile, self.side, self.radius.value(),
-                            self.inward.value() / scale, self.protrusion.value() / scale)
+        self.canvas.overlay(
+            self.profile,
+            self.side,
+            self.radius.value(),
+            self.inward.value() / scale,
+            self.protrusion.value() / scale,
+        )
         inward, protrusion = self.profile.inward_px * scale, self.profile.protrusion_px * scale
         over = inward > self.inward.value() or protrusion > self.protrusion.value()
-        state = ("MEASUREMENT NOT VALID" if not self.profile.valid else
-                 "REFERENCE ALIGNMENT NOT CONFIRMED" if not self.aligned.isChecked() else
-                 "OUTSIDE TRIAL LIMITS" if over else "WITHIN TRIAL LIMITS")
-        measurements = (f"Observed inward max: {inward:.3f} {unit}  |  Observed protrusion max: {protrusion:.3f} {unit}"
-                        if self.profile.accepted.any() else "Observed inward / protrusion: N/A - no reliable edge")
+        state = (
+            "MEASUREMENT NOT VALID"
+            if not self.profile.valid
+            else "REFERENCE ALIGNMENT NOT CONFIRMED"
+            if not self.aligned.isChecked()
+            else "OUTSIDE TRIAL LIMITS"
+            if over
+            else "WITHIN TRIAL LIMITS"
+        )
+        measurements = (
+            f"Observed inward max: {inward:.3f} {unit}  |  Observed protrusion max: {protrusion:.3f} {unit}"
+            if self.profile.accepted.any()
+            else "Observed inward / protrusion: N/A - no reliable edge"
+        )
         self.result.setText(
             f"{state}  |  Edge coverage: {self.profile.coverage:.0%}\n{measurements}\n"
-            + ("Pixels only - scale not verified." if unit == "px" else "mm uses operator-verified scale; accuracy is not certified.")
-            + ("  Adjust line / search band / contrast." if not self.profile.valid else "  Selected segment only.")
+            + (
+                "Pixels only - scale not verified."
+                if unit == "px"
+                else "mm uses operator-verified scale; accuracy is not certified."
+            )
+            + (
+                "  Adjust line / search band / contrast."
+                if not self.profile.valid
+                else "  Selected segment only."
+            )
         )
         ends = np.asarray(line)
         h, w = self.image.shape[:2]
-        geometry_valid = (np.isfinite(ends).all() and np.linalg.norm(np.diff(ends, axis=0)) >= 12
-                          and (ends >= 0).all() and (ends[:, 0] < w).all() and (ends[:, 1] < h).all())
+        geometry_valid = (
+            np.isfinite(ends).all()
+            and np.linalg.norm(np.diff(ends, axis=0)) >= 12
+            and (ends >= 0).all()
+            and (ends[:, 0] < w).all()
+            and (ends[:, 1] < h).all()
+        )
         self.save_button.setEnabled(bool(geometry_valid))
 
     def settings(self):
-        return {"line": self.canvas.line, "side": self.side, "radius": self.radius.value(),
-                "contrast": self.contrast.value(), "polarity": self.polarity.currentIndex(),
-                "inward_px": self.inward.value() / self.display_scale,
-                "protrusion_px": self.protrusion.value() / self.display_scale,
-                "scale_x": self.scale_x.value(), "scale_y": self.scale_y.value()}
+        settings = {
+            "line": self.canvas.line,
+            "side": self.side,
+            "radius": self.radius.value(),
+            "contrast": self.contrast.value(),
+            "polarity": self.polarity.currentIndex(),
+            "inward_px": self.inward.value() / self.display_scale,
+            "protrusion_px": self.protrusion.value() / self.display_scale,
+            "scale_x": self.scale_x.value(),
+            "scale_y": self.scale_y.value(),
+        }
+        if self.recipe_reference is not None:
+            settings["recipe_reference"] = self.recipe_reference
+        return settings
 
     def restore(self, record):
         line = np.asarray(record["line"], dtype=float)
         if line.shape != (2, 2) or not np.isfinite(line).all() or record["side"] not in (-1, 1):
             raise ValueError("Saved reference geometry is invalid.")
         h, w = self.image.shape[:2]
-        if (line < 0).any() or (line[:, 0] >= w).any() or (line[:, 1] >= h).any() or np.linalg.norm(line[1] - line[0]) < 12:
+        if (
+            (line < 0).any()
+            or (line[:, 0] >= w).any()
+            or (line[:, 1] >= h).any()
+            or np.linalg.norm(line[1] - line[0]) < 12
+        ):
             raise ValueError("Saved reference is outside this image or too short.")
-        for key, low, high in (("radius", 4, 200), ("contrast", .1, 100), ("polarity", 0, 1),
-                               ("inward_px", 0, 100000), ("protrusion_px", 0, 100000),
-                               ("scale_x", 0, 10), ("scale_y", 0, 10)):
+        for key, low, high in (
+            ("radius", 4, 200),
+            ("contrast", 0.1, 100),
+            ("polarity", 0, 1),
+            ("inward_px", 0, 100000),
+            ("protrusion_px", 0, 100000),
+            ("scale_x", 0, 10),
+            ("scale_y", 0, 10),
+        ):
             value = record.get(key, 0)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not low <= value <= high
+            ):
                 raise ValueError(f"Saved reference {key} is invalid.")
         if not float(record["radius"]).is_integer() or not float(record["polarity"]).is_integer():
             raise ValueError("Saved reference search / polarity is invalid.")
+        recipe = record.get("recipe_reference")
+        if recipe is not None:
+            projected = validate_recipe_reference(recipe, self.image.shape)
+            if not np.allclose(projected, line, atol=1e-6, rtol=0):
+                raise ValueError("Saved line no longer matches its recipe mapping.")
         self.canvas.line = line.tolist()
+        self.set_recipe_source(recipe)
         self.side = record["side"]
         self.radius.setValue(int(record["radius"]))
         self.contrast.setValue(record["contrast"])
@@ -425,17 +614,30 @@ class ReferenceMeasurementDialog(QDialog):
         if not self.save_button.isEnabled():
             return
         try:
+            if self.recipe_reference is not None:
+                projected = validate_recipe_reference(self.recipe_reference, self.image.shape)
+                if not np.allclose(projected, self.canvas.line, atol=1e-6, rtol=0):
+                    raise ValueError(
+                        "Reference line was changed independently of the recipe. Select the recipe again."
+                    )
             self.store.save(self.image_path, self.settings(), self.source)
         except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.warning(self, "Reference not saved", str(exc))
             return
         self.dirty = False
-        self.saved_status.setText("SAVED FOR THIS IMAGE ONLY - does not change model / production settings")
+        self.saved_status.setText(
+            "SAVED FOR THIS IMAGE ONLY - does not change model / production settings"
+        )
 
     def reject(self):
         if self.dirty:
-            answer = QMessageBox.question(self, "Unsaved reference", "Discard unsaved reference changes?",
-                                          QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Cancel)
+            answer = QMessageBox.question(
+                self,
+                "Unsaved reference",
+                "Discard unsaved reference changes?",
+                QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
             if answer != QMessageBox.Discard:
                 return
         self.timer.stop()
@@ -445,12 +647,16 @@ class ReferenceMeasurementDialog(QDialog):
 def main():
     """Open the reference editor independently, without starting inspection."""
     import argparse
+
+    from production_app import APP_STYLE
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
-    from production_app import APP_STYLE
 
     parser = argparse.ArgumentParser(description="AVTR experimental reference edge editor")
     parser.add_argument("image", type=Path)
+    parser.add_argument(
+        "--recipe", type=Path, help="Open a Router recipe; camera mapping is still required."
+    )
     parser.add_argument("--line", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"))
     parser.add_argument("--pcb-side", type=int, choices=(-1, 1), default=1)
     parser.add_argument("--search-radius", type=int, default=24)
@@ -464,7 +670,11 @@ def main():
     image_path = args.image.resolve()
     try:
         dialog = ReferenceMeasurementDialog(
-            image_path, Path(__file__).resolve().parent.parent / "reference_lines.json", [image_path.parent]
+            image_path,
+            Path(__file__).resolve().parent.parent / "reference_lines.json",
+            [image_path.parent],
+            recipe_dir=image_path.parent.parent / "Recipe",
+            recipe_path=args.recipe,
         )
     except (OSError, ValueError, cv2.error) as exc:
         parser.error(str(exc))
@@ -475,6 +685,8 @@ def main():
         dialog.contrast.setValue(args.min_contrast)
         dialog.line_edited()
         dialog.measure()
+    if args.recipe:
+        QTimer.singleShot(0, dialog.open_recipe)
     dialog.exec()
     return 0
 

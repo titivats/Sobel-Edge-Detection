@@ -24,6 +24,44 @@ for manual configuration; replace its example paths before launching.
 
 ## Settings workflow
 
+### Technician image training
+
+Use **TRAIN IMAGES** on the main screen to open the training page through the
+existing Settings authentication. This is a workflow shortcut, not a separate
+role or permission system. A technician with Settings access can prepare and
+train examples without using the Recipe reference editor or camera mapping.
+
+1. In **1 DATA SOURCE**, select the Router root containing Picture and Result.
+   The app needs the product identity from the results.
+2. In **2 SOBEL TUNING**, review Original/Sobel and choose **SAVE AS GOOD** or
+   **SAVE AS NG** between Previous and Next. These save current preprocessing
+   and the selected image's label. Labels and saved images carry over to page 3
+   automatically; no second folder selection is needed. The label actions remain
+   in page 2, and page 3 provides image navigation, training and testing.
+3. Follow the next-step banner; it shows how many more saved GOOD/NG examples
+   are needed to start training. Press **TRAIN & SAVE MODEL**, then test.
+4. Run **4a TEST MODEL**, review predictions, then use **4b SAVE TESTED SETTINGS**.
+   The bottom-right buttons navigate between Sobel Tuning and Train Images.
+
+Sobel parameters use one column with direct numeric entry and vertical +/minus
+buttons (hold to repeat). Numeric fields support the mouse wheel. The panel
+scrolls vertically on short screens, with no horizontal scrollbar. Blur size and
+Sobel kernel retain their discrete choices. The current image banner shows the
+user's GOOD/NG label and SAVED / NOT SAVED state; the machine's original Router
+result is available in its tooltip. After a parameter edit, the saved class
+button returns to SAVE AS GOOD/NG until matching preprocessing is saved again.
+
+Labeling does not silently retune preprocessing: current Sobel settings are used
+for the preview and save. If edges need adjustment, use the Sobel tab and review
+examples under the new settings. An image or label save failure keeps the
+selection in place. If only the label write fails, the saved Sobel image remains
+available for retry. Recipe measurement and confidence controls are under
+**ADVANCED SETTINGS / EDGE MEASUREMENT**; they are not extra training steps.
+Training does not certify a model for production, and current minimum sample
+counts and quality gates are unchanged.
+
+### Detailed preparation and testing
+
 1. **DATA SOURCE:** choose the export root containing `Picture`, `Result`, and
    optionally `Recipe`, `Log`, and `Config`. Both the newer AUO6000 CSV without a
    table column and the older table-based CSV are supported. Review unmatched
@@ -36,11 +74,11 @@ for manual configuration; replace its example paths before launching.
    X/Y edge weights and brightness use 0.001 steps, shown and saved at the same
    precision; blur strength and normalization use 0.01 steps. Older records that
    already rounded a value cannot recover the lost digits; review and save again.
-3. **VISION TRANSFORMER:** label at least five eligible GOOD and five eligible NG
-   images, then select **TRAIN & SAVE MODEL**. A fresh linear head is trained on
+3. **TRAIN IMAGES:** prepare at least five eligible GOOD and five eligible NG
+   images in page 2, then select **TRAIN & SAVE MODEL**. A linear head is trained on
    frozen DINOv2 features. The first run downloads the pinned backbone source and
    pretrained weights; subsequent runs use the local cache.
-4. Select **TEST ALL IMAGES**. Use the image selector or its arrows to inspect each
+4. Select **4a TEST MODEL**. Use the image selector or its arrows to inspect each
    Original/Sobel/prediction pair. A low-confidence GOOD remains `PREDICT: GOOD`
    and is marked `BELOW THRESHOLD`; it is not accepted as a passing result.
 5. **SAVE SETTINGS** becomes available after a complete, valid test. It saves the
@@ -57,12 +95,12 @@ identity metadata require retraining. Inference preserves checkpoint preprocessi
 
 ### Reference edge measurement (experimental)
 
-In **SETTING > 3 VISION TRANSFORMER**, select an image and choose
-**ADJUST REFERENCE LINE** in the reference measurement card. This opens a separate
+In **SETTING > 3 TRAIN IMAGES > ADVANCED SETTINGS / EDGE MEASUREMENT**, select an image and choose
+**REFERENCE FROM ROUTER RECIPE** in the reference measurement card. This opens a separate
 editor; no trained model is required. It does **not** modify production GOOD/NG,
 labels, Sobel preprocessing or model weights.
 
-1. Click **DRAW LINE** and drag along the nominal, known-good PCB boundary.
+1. Click **MANUAL LINE** and drag along the nominal, known-good PCB boundary when using manual mode.
    Drag the endpoints to change its angle; MOVE buttons shift it one pixel normal
    to the line. Do not fit the reference to a defect. Wheel zooms; dragging away
    from the endpoints pans; **FIT IMAGE** restores the view.
@@ -90,6 +128,58 @@ apart along a segment up to 4095 pixels long. Interpolated decimal output is not
 an accuracy guarantee. Reflections, copper tracks and solder-mask boundaries can
 be confused with the physical PCB edge. Validate optical calibration, detection,
 repeatability and tolerances before considering any production integration.
+
+#### Reference from the Router program
+
+Choose **CHOOSE RECIPE LINE** to use machine-program geometry instead of
+drawing a reference. The matching panel's recipe is suggested when available;
+**CHOOSE RECIPE** also accepts recipes in customer subfolders. Choose a
+straight candidate segment in the recipe overview. The existing binary reader
+scans the first 40,000 bytes heuristically; candidate geometry and its meaning
+must be checked against the Router program, not treated as a certified parser.
+
+Enter the machine X/Y coordinate corresponding to the original image center,
+the verified X/Y mm-per-pixel scales, the angle of image +X in machine XY, and
+the camera Y direction. Use inspection-camera coordinates with the correct
+camera/tool offset. These values are not inferred from the inspected edge or
+borrowed from another machine. This planar mapping supports rotation and separate
+axis scales; it does not correct perspective or lens distortion.
+
+Set the signed nominal-edge offset from segment A to B: positive is its left
+normal in machine XY. If the recipe represents a cutter centerline, establish
+the correct side and compensation from the Router program/tool setup; do not
+assume the centerline is the finished PCB edge or apply the tool radius twice.
+Zero means the recipe segment itself is the intended reference.
+
+After checking the mapping, choose **USE THIS LINE**. Only the visible
+portion is projected; out-of-view or missing-scale mappings are refused. The
+line is never stretched to fit an image. Recipe endpoints and MOVE controls are
+locked; change the recipe mapping to reposition them. Check alignment against
+the Original image before interpreting measurements. mm still requires explicit
+scale verification. **MANUAL LINE** leaves recipe mode.
+
+Saved references include the recipe path, SHA-256, selected segment, mapping and
+edge offset. Reload and save recheck recipe content and geometry. Alignment and
+scale verification are not restored as confirmed. The reference remains bound
+to one source image and does not change GOOD/NG or PLC decisions. No actual
+AUO6000 camera mapping has been validated in the current sample export.
+
+The default view shows the recipe and Original photo side by side, with numbered
+recipe lines and **PREVIOUS / NEXT** navigation. Coordinates are in tooltips;
+technical mapping controls are collapsed under **CAMERA SETUP**. When mapping
+is missing, **CAMERA SETUP NEEDED** explains the block and **USE THIS LINE** is
+disabled. No reference is drawn on the photo until the mapping is verified.
+This simplifies the screen; it does not supply missing camera calibration or
+automatically associate recipe line numbers with image cut-point numbers.
+The measurement editor keeps manual drawing, search controls and unit calibration
+under **ADVANCED MEASUREMENT SETTINGS**. Existing saved settings retain their behavior.
+
+To open the sample recipe editor directly:
+
+```powershell
+cd RouterVisionStudio
+..\venv\Scripts\python.exe -m router_vision.reference_ui ..\sobel\Picture\20260903_111059.bmp --recipe ..\sobel\Recipe\199944000-Optoput-Test.rcp
+```
 
 To open just the trial editor without starting inspection:
 

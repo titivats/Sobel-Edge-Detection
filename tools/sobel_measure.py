@@ -8,7 +8,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-
 SUPPORTED_EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
@@ -84,8 +83,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=35,
         help=(
-            "Maximum grayscale value treated as black background in foreground mode. "
-            "Default: 35."
+            "Maximum grayscale value treated as black background in foreground mode. Default: 35."
         ),
     )
     parser.add_argument(
@@ -93,8 +91,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20,
         help=(
-            "Minimum HSV saturation treated as colored foreground in foreground mode. "
-            "Default: 20."
+            "Minimum HSV saturation treated as colored foreground in foreground mode. Default: 20."
         ),
     )
     return parser.parse_args()
@@ -184,9 +181,7 @@ def largest_foreground_contours(
     contours, _hierarchy = cv2.findContours(
         foreground_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
-    return [
-        contour for contour in contours if cv2.contourArea(contour) >= min_contour_area
-    ]
+    return [contour for contour in contours if cv2.contourArea(contour) >= min_contour_area]
 
 
 def measure_image(

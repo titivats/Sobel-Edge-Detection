@@ -39,15 +39,15 @@ class AppConfig:
     scan_y0: int = 0
     scan_y1: int = 4000
     scan_step: int = 1
-    green_delta: int = 5      # a mask pixel needs G - R greater than this
-    green_min: int = 25       # and G within this band, which excludes gold pads
+    green_delta: int = 5  # a mask pixel needs G - R greater than this
+    green_min: int = 25  # and G within this band, which excludes gold pads
     green_max: int = 140
     min_valid_rows: int = 300  # scan rows that must find both edges
 
     # --- judgement ---------------------------------------------------------
-    width_tol_mm: float = 0.20   # absolute spec limit on slot width deviation
-    edge_tol_mm: float = 0.20    # absolute spec limit on sideways shift
-    sigma_k: float = 5.0         # also fail at K x the sd measured at calibration (0 = off)
+    width_tol_mm: float = 0.20  # absolute spec limit on slot width deviation
+    edge_tol_mm: float = 0.20  # absolute spec limit on sideways shift
+    sigma_k: float = 5.0  # also fail at K x the sd measured at calibration (0 = off)
     align_warn_mm: float = 0.15  # OffsetX/Y in the run CSV beyond this raises a warning
 
     # --- model-only mass-production gate ---------------------------------
@@ -70,11 +70,11 @@ class AppConfig:
     calib_max_runs: int = 40
 
     # --- background timers, as left by the operator ------------------------
-    show_overlay: bool = True          # draw the measurement on pictures on screen
-    index_refresh_min: int = 10        # how often the picture index rebuilds
-    auto_calibrate: bool = False       # auto calibration running when the app opens
-    calibrate_every_min: int = 10      # how often auto calibration looks for gaps
-    calibrate_on_bit_change: bool = True   # rebuild a baseline after a bit-wear alarm
+    show_overlay: bool = True  # draw the measurement on pictures on screen
+    index_refresh_min: int = 10  # how often the picture index rebuilds
+    auto_calibrate: bool = False  # auto calibration running when the app opens
+    calibrate_every_min: int = 10  # how often auto calibration looks for gaps
+    calibrate_on_bit_change: bool = True  # rebuild a baseline after a bit-wear alarm
 
     # ----------------------------------------------------------------------
     @classmethod
@@ -99,7 +99,9 @@ class AppConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            temporary.write_text(json.dumps(asdict(self), indent=2, allow_nan=False), encoding="utf-8")
+            temporary.write_text(
+                json.dumps(asdict(self), indent=2, allow_nan=False), encoding="utf-8"
+            )
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)

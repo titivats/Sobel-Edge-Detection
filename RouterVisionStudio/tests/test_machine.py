@@ -7,7 +7,6 @@ from pathlib import Path
 
 from router_vision.machine import attach_pictures, load_runs
 
-
 MODERN_HEADER = (
     "SN,Barcode,Recipe_Name,ProductId,BitDiameter,CuttingSpeed,"
     "OffsetY,OffsetX,Result,BitShiftCount,CuttingTime\n"
@@ -25,8 +24,7 @@ class MachineRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "_20260903_100400.csv").write_text(
-                MODERN_HEADER
-                + "SN-100,,PRODUCT-A.rcp,PRODUCT-A,1.3,4,-0.02,0.03,True,0,180\n",
+                MODERN_HEADER + "SN-100,,PRODUCT-A.rcp,PRODUCT-A,1.3,4,-0.02,0.03,True,0,180\n",
                 encoding="utf-8",
             )
 
@@ -58,8 +56,7 @@ class MachineRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "_20260903_100015.csv").write_text(
-                LEGACY_HEADER
-                + "SN-LEGACY,run-1,,PRODUCT-A,LeftTable,PRODUCT-A.rcp,True,"
+                LEGACY_HEADER + "SN-LEGACY,run-1,,PRODUCT-A,LeftTable,PRODUCT-A.rcp,True,"
                 "0.1,-0.2,0.03,2026/09/03 10:00:00,15,OP,1,2,3,14,,"
                 "AUO6000,1,2026/09/03 10:00:15,FIX\n",
                 encoding="utf-8",
@@ -78,8 +75,7 @@ class MachineRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "_20260903_100200.csv").write_text(
-                MODERN_HEADER
-                + '"SN,001",,"Recipe, Revision A.rcp",PRODUCT-Q,1.3,4,0,0,'
+                MODERN_HEADER + '"SN,001",,"Recipe, Revision A.rcp",PRODUCT-Q,1.3,4,0,0,'
                 "True,0,60\n",
                 encoding="utf-8",
             )
@@ -95,8 +91,7 @@ class MachineRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "_20260903_100200.csv").write_text(
-                MODERN_HEADER
-                + "SN-EMPTY,,UNKNOWN.rcp,,1.3,4,0,0,True,0,60\n",
+                MODERN_HEADER + "SN-EMPTY,,UNKNOWN.rcp,,1.3,4,0,0,True,0,60\n",
                 encoding="utf-8",
             )
 

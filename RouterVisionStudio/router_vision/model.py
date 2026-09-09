@@ -34,7 +34,7 @@ BACKBONES = {
 }
 DEFAULT_BACKBONE = "dinov2_vits14"
 DINOV2_REPOSITORY = "facebookresearch/dinov2:7764ea0f912e53c92e82eb78a2a1631e92725fc8"
-INPUT_SIZE = 224                     # must be a multiple of 14 for DINOv2
+INPUT_SIZE = 224  # must be a multiple of 14 for DINOv2
 PREPROCESS_VERSION = "sobel-magnitude-v1"
 MODEL_CLASSES = ("GOOD", "NG")
 MIN_MODEL_VALIDATION_ACCURACY = 0.80
@@ -50,6 +50,7 @@ class CropBox:
     Defaults frame the routed channel in the middle of a 1440x1080 frame rather
     than squashing the whole image, so the model sees the cut at useful detail.
     """
+
     x0: int = 400
     y0: int = 290
     x1: int = 1040
@@ -116,7 +117,7 @@ class TrainReport:
     seconds: float = 0.0
     device: str = ""
     backbone: str = ""
-    resumed: bool = False        # carried on from the previous model for this key
+    resumed: bool = False  # carried on from the previous model for this key
 
     def text(self) -> str:
         lines = [
@@ -299,7 +300,11 @@ def _checkpoint_parts(
         "edge_gain",
     ):
         value = raw_sobel[name]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
             raise ValueError(f"Model checkpoint Sobel field {name} is invalid.")
     sobel_candidate = SobelConfig(**dict(raw_sobel))
     sobel = sobel_candidate.validated()
@@ -313,7 +318,9 @@ def _checkpoint_parts(
     if not isinstance(weight, torch.Tensor) or not isinstance(bias, torch.Tensor):
         raise ValueError("Model checkpoint head state must contain tensors.")
     expected_dimension = BACKBONES[backbone]
-    if tuple(weight.shape) != (len(classes), expected_dimension) or tuple(bias.shape) != (len(classes),):
+    if tuple(weight.shape) != (len(classes), expected_dimension) or tuple(bias.shape) != (
+        len(classes),
+    ):
         raise ValueError("Model checkpoint head dimensions do not match its backbone and classes.")
     for tensor in (weight, bias):
         if not tensor.is_floating_point() or not bool(torch.isfinite(tensor).all().item()):
@@ -346,8 +353,7 @@ class FeatureExtractor:
             return
         if progress:
             progress(f"Loading {self.backbone} (first run downloads ~85 MB)...")
-        model = torch.hub.load(DINOV2_REPOSITORY, self.backbone,
-                               trust_repo=True, verbose=False)
+        model = torch.hub.load(DINOV2_REPOSITORY, self.backbone, trust_repo=True, verbose=False)
         model.eval().to(self.device)
         for p in model.parameters():
             p.requires_grad_(False)
@@ -355,8 +361,12 @@ class FeatureExtractor:
         if progress:
             progress(f"{self.backbone} ready on {self.device}")
 
-    def __init__(self, backbone: str = DEFAULT_BACKBONE, device: str | None = None,
-                 sobel: SobelConfig | None = None):
+    def __init__(
+        self,
+        backbone: str = DEFAULT_BACKBONE,
+        device: str | None = None,
+        sobel: SobelConfig | None = None,
+    ):
         self.backbone = backbone
         self.device = device or pick_device()
         self.dim = BACKBONES.get(backbone, 384)
@@ -405,8 +415,9 @@ class FeatureExtractor:
         return rgb.transpose(2, 0, 1)
 
     @torch.no_grad()
-    def embed(self, paths: list[str], crop: CropBox, batch: int = 16,
-              progress=None, cancelled=None) -> tuple[np.ndarray, list[int]]:
+    def embed(
+        self, paths: list[str], crop: CropBox, batch: int = 16, progress=None, cancelled=None
+    ) -> tuple[np.ndarray, list[int]]:
         """Return (embeddings, indices of paths that could be read)."""
         self.ensure_loaded(progress=lambda m: progress(0, len(paths), m) if progress else None)
         out: list[np.ndarray] = []
@@ -446,8 +457,13 @@ class FeatureExtractor:
 class CutClassifier:
     """Linear head over DINOv2 features."""
 
-    def __init__(self, backbone: str = DEFAULT_BACKBONE, crop: CropBox | None = None,
-                 sobel: SobelConfig | None = None, model_key: str = ""):
+    def __init__(
+        self,
+        backbone: str = DEFAULT_BACKBONE,
+        crop: CropBox | None = None,
+        sobel: SobelConfig | None = None,
+        model_key: str = "",
+    ):
         self.backbone = backbone
         self.crop = crop or CropBox()
         self.sobel = (sobel or SobelConfig()).validated()
@@ -459,10 +475,16 @@ class CutClassifier:
         self.report: TrainReport | None = None
 
     # -- training ----------------------------------------------------------
-    def train(self, items: list[tuple[str, str]], epochs: int = 300,
-              val_fraction: float = 0.25, seed: int = 0,
-              progress=None, cancelled=None,
-              resume_from: "CutClassifier | None" = None) -> TrainReport:
+    def train(
+        self,
+        items: list[tuple[str, str]],
+        epochs: int = 300,
+        val_fraction: float = 0.25,
+        seed: int = 0,
+        progress=None,
+        cancelled=None,
+        resume_from: "CutClassifier | None" = None,
+    ) -> TrainReport:
         """Fit the head on `items`.
 
         With `resume_from`, the head starts where that model left off instead of
@@ -472,8 +494,7 @@ class CutClassifier:
         meaningless and a fresh head is used.
         """
         counts = {
-            label: sum(item_label == label for _, item_label in items)
-            for label in MODEL_CLASSES
+            label: sum(item_label == label for _, item_label in items) for label in MODEL_CLASSES
         }
         unexpected = sorted({label for _, label in items}.difference(MODEL_CLASSES))
         if unexpected:
@@ -490,8 +511,7 @@ class CutClassifier:
         paths = [p for p, _ in items]
         names = sorted({c for _, c in items})
 
-        feats, kept = self.extractor.embed(paths, self.crop,
-                                           progress=progress, cancelled=cancelled)
+        feats, kept = self.extractor.embed(paths, self.crop, progress=progress, cancelled=cancelled)
         expected_indices = list(range(len(paths)))
         if kept != expected_indices:
             unreadable = len(paths) - len(set(kept).intersection(expected_indices))
@@ -523,19 +543,24 @@ class CutClassifier:
             torch.random.default_generator.manual_seed(seed)
             head = nn.Linear(feats.shape[1], len(names)).to(self.device)
         resumed = False
-        if (resume_from is not None and resume_from.head is not None
-                and list(resume_from.classes) == names
-                and resume_from.backbone == self.backbone
-                and resume_from.head.in_features == feats.shape[1]
-                and resume_from.head.out_features == len(names)):
+        if (
+            resume_from is not None
+            and resume_from.head is not None
+            and list(resume_from.classes) == names
+            and resume_from.backbone == self.backbone
+            and resume_from.head.in_features == feats.shape[1]
+            and resume_from.head.out_features == len(names)
+        ):
             head.load_state_dict(resume_from.head.state_dict())
             resumed = True
 
         # class weights keep a rare defect class from being ignored
         counts = np.bincount(labels[train_idx], minlength=len(names)).astype(np.float32)
-        weights = torch.from_numpy(
-            np.where(counts > 0, counts.sum() / np.maximum(counts, 1), 0.0)
-        ).float().to(self.device)
+        weights = (
+            torch.from_numpy(np.where(counts > 0, counts.sum() / np.maximum(counts, 1), 0.0))
+            .float()
+            .to(self.device)
+        )
         loss_fn = nn.CrossEntropyLoss(weight=weights)
         opt = torch.optim.AdamW(head.parameters(), lr=1e-3, weight_decay=1e-2)
 
@@ -571,21 +596,26 @@ class CutClassifier:
         self.classes = names
         self.head = head
         self.report = TrainReport(
-            classes=names, n_train=len(train_idx), n_val=len(val_idx), epochs=epochs,
-            train_acc=train_acc, val_acc=val_acc, per_class=per_class,
-            seconds=time.time() - started, device=self.device, backbone=self.backbone,
+            classes=names,
+            n_train=len(train_idx),
+            n_val=len(val_idx),
+            epochs=epochs,
+            train_acc=train_acc,
+            val_acc=val_acc,
+            per_class=per_class,
+            seconds=time.time() - started,
+            device=self.device,
+            backbone=self.backbone,
             resumed=resumed,
         )
         return self.report
 
     # -- inference ---------------------------------------------------------
     @torch.no_grad()
-    def predict(self, paths: list[str], progress=None,
-                cancelled=None) -> list[tuple[str, float]]:
+    def predict(self, paths: list[str], progress=None, cancelled=None) -> list[tuple[str, float]]:
         if self.head is None:
             raise RuntimeError("No trained model loaded.")
-        feats, kept = self.extractor.embed(paths, self.crop,
-                                           progress=progress, cancelled=cancelled)
+        feats, kept = self.extractor.embed(paths, self.crop, progress=progress, cancelled=cancelled)
         results: list[tuple[str, float]] = [("", 0.0)] * len(paths)
         if not kept:
             return results

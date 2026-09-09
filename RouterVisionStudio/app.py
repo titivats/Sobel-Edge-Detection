@@ -18,40 +18,89 @@ from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen,
-                           QPixmap)
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from router_vision import (  # noqa: E402
-    AppConfig, BaselineStore, CropBox, CutClassifier, DEFAULT_CLASSES,
-    LabelStore, PositionLabels, ProtectedPathError, available_days, calibrate,
-    check_write_target, find_recipe, index_pictures, inspect, load_day,
-    fit_bounds, load_toolpath, pick_device, protected_roots, read_machine_flags,
-    read_pixel_size, render_overlay,
+    DEFAULT_CLASSES,
+    AppConfig,
+    BaselineStore,
+    CropBox,
+    CutClassifier,
+    LabelStore,
+    PositionLabels,
+    ProtectedPathError,
+    available_days,
+    calibrate,
+    check_write_target,
+    fit_bounds,
+    index_pictures,
+    inspect,
+    load_day,
+    load_toolpath,
+    pick_device,
+    protected_roots,
+    read_machine_flags,
+    read_pixel_size,
+    render_overlay,
+    theme,  # noqa: E402
+)
+from router_vision.analysis import MIN_CALIB_RUNS, _measure  # noqa: E402
+from router_vision.changes import baseline_is_stale  # noqa: E402
+from router_vision.config import (  # noqa: E402
+    DEFAULT_BASELINE_NAME,
+    DEFAULT_CONFIG_NAME,
+)
+from router_vision.machine import (  # noqa: E402
+    PICTURE_STAMP,
+    attach_pictures,
+    load_runs,
 )
 from router_vision.vision import draw_overlay  # noqa: E402
-from router_vision import theme  # noqa: E402
-from router_vision.changes import baseline_is_stale, find_bit_events  # noqa: E402
-from router_vision.analysis import MIN_CALIB_RUNS, _measure  # noqa: E402
-from router_vision.config import DEFAULT_BASELINE_NAME, DEFAULT_CONFIG_NAME  # noqa: E402
-from router_vision.machine import PICTURE_STAMP, attach_pictures, load_runs  # noqa: E402
-from router_vision.widgets import (Card, HeaderBar, KpiCard,  # noqa: E402
-                                   OverlayLegend, PosCard)
+from router_vision.widgets import (  # noqa: E402
+    Card,
+    HeaderBar,
+    KpiCard,
+    OverlayLegend,
+    PosCard,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / DEFAULT_CONFIG_NAME
 BASELINE_PATH = APP_DIR / DEFAULT_BASELINE_NAME
 POSITION_PATH = APP_DIR / "positions.json"
 LABEL_PATH = APP_DIR / "labels.json"
-MODEL_DIR = APP_DIR / "models"          # used when the config names no folder
+MODEL_DIR = APP_DIR / "models"  # used when the config names no folder
 MODEL_PREFIX = "cut_classifier_"
 
 
@@ -59,6 +108,7 @@ def model_file_name(key: str) -> str:
     """File name for one ProductId|table, e.g. cut_classifier_PROD_LeftTable.pt."""
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
     return f"{MODEL_PREFIX}{safe}.pt"
+
 
 THUMB = QSize(210, 158)
 # A baseline built from a handful of panels is not worth having, so automatic
@@ -69,9 +119,13 @@ COLOR_NG = QColor(theme.TINT_NG)
 COLOR_WARN = QColor(theme.TINT_WARN)
 COLOR_GREY = QColor(theme.TINT_GREY)
 STATUS_COLORS = {
-    "OK": None, "NG WIDTH": COLOR_NG, "NG SHIFT": COLOR_NG,
-    "WARN ALIGN": COLOR_WARN, "NO BASELINE": COLOR_GREY,
-    "NO DATA": COLOR_GREY, "SKIP": COLOR_GREY,
+    "OK": None,
+    "NG WIDTH": COLOR_NG,
+    "NG SHIFT": COLOR_NG,
+    "WARN ALIGN": COLOR_WARN,
+    "NO BASELINE": COLOR_GREY,
+    "NO DATA": COLOR_GREY,
+    "SKIP": COLOR_GREY,
 }
 CLASS_COLORS = {"GOOD": COLOR_OK, "NG": COLOR_NG}
 
@@ -224,6 +278,7 @@ class ThumbnailLoader(QThread):
 # toolpath drawing
 # ---------------------------------------------------------------------------
 
+
 class ToolpathView(QWidget):
     """Draws the cut geometry read out of the recipe."""
 
@@ -243,8 +298,7 @@ class ToolpathView(QWidget):
         p.fillRect(self.rect(), QColor("#ffffff"))
         if not self.toolpath or not self.toolpath.segments:
             p.setPen(QColor("#888"))
-            p.drawText(self.rect(), Qt.AlignCenter,
-                       "Select a recipe to see its cutting path.")
+            p.drawText(self.rect(), Qt.AlignCenter, "Select a recipe to see its cutting path.")
             return
 
         # Fit to the body of the geometry: one mis-parsed segment out in the
@@ -260,8 +314,7 @@ class ToolpathView(QWidget):
 
         def to_px(pt):
             # machine Y grows upward, screen Y grows downward
-            return (off_x + (pt[0] - x0) * scale,
-                    off_y + (y1 - pt[1]) * scale)
+            return (off_x + (pt[0] - x0) * scale, off_y + (y1 - pt[1]) * scale)
 
         # frame
         p.setPen(QPen(QColor("#d1d5db"), 1))
@@ -300,14 +353,17 @@ class ToolpathView(QWidget):
         p.drawText(margin, 20, f"{self.toolpath.recipe.name}   {self.toolpath.summary()}")
         legend = "red = routed slot / breakaway tab        blue = cut segment"
         if outliers:
-            legend += (f"        grey = {len(outliers)} segment(s) outside the "
-                       "fitted view, check the recipe")
+            legend += (
+                f"        grey = {len(outliers)} segment(s) outside the "
+                "fitted view, check the recipe"
+            )
         p.drawText(margin, self.height() - 10, legend)
 
 
 # ---------------------------------------------------------------------------
 # image viewer
 # ---------------------------------------------------------------------------
+
 
 class ImageViewer(QDialog):
     def __init__(self, cfg, path, baseline_index=None, caption="", prediction=None, parent=None):
@@ -317,8 +373,7 @@ class ImageViewer(QDialog):
         meas = _measure(cfg, path)
         bl_l = baseline_index.left_mean if baseline_index else None
         bl_w = baseline_index.width_mean if baseline_index else None
-        pix = (bgr_to_pixmap(render_overlay(path, meas)) if cfg.show_overlay
-               else QPixmap(path))
+        pix = bgr_to_pixmap(render_overlay(path, meas)) if cfg.show_overlay else QPixmap(path)
 
         view = QLabel()
         view.setAlignment(Qt.AlignCenter)
@@ -332,20 +387,28 @@ class ImageViewer(QDialog):
             side = "right" if rough == "left" else "left"
             edge_px = meas.slot_right if side == "right" else meas.slot_left
             if rough:
-                lines.append(f"measured   {side} edge {edge_px} px   "
-                             f"({rough} edge is a tab or contour, not judged)")
+                lines.append(
+                    f"measured   {side} edge {edge_px} px   "
+                    f"({rough} edge is a tab or contour, not judged)"
+                )
             else:
-                lines.append(f"measured   width {meas.width} px = "
-                             f"{cfg.px_to_mm(meas.width):.4f} mm"
-                             f"   left {meas.slot_left} px   right {meas.slot_right} px")
-            lines.append(f"scan rows  {meas.rows}/{meas.attempted}   spread "
-                         f"{cfg.px_to_mm(meas.width_sd):.4f} mm")
+                lines.append(
+                    f"measured   width {meas.width} px = "
+                    f"{cfg.px_to_mm(meas.width):.4f} mm"
+                    f"   left {meas.slot_left} px   right {meas.slot_right} px"
+                )
+            lines.append(
+                f"scan rows  {meas.rows}/{meas.attempted}   spread "
+                f"{cfg.px_to_mm(meas.width_sd):.4f} mm"
+            )
             if baseline_index and rough:
                 shift = cfg.px_to_mm(edge_px - baseline_index.edge(side))
                 lines.append(f"vs baseline  shift {shift:+.4f} mm ({side} edge)")
             elif baseline_index:
-                lines.append(f"vs baseline  width {cfg.px_to_mm(meas.width - bl_w):+.4f} mm"
-                             f"   shift {cfg.px_to_mm(meas.slot_left - bl_l):+.4f} mm")
+                lines.append(
+                    f"vs baseline  width {cfg.px_to_mm(meas.width - bl_w):+.4f} mm"
+                    f"   shift {cfg.px_to_mm(meas.slot_left - bl_l):+.4f} mm"
+                )
         else:
             lines.append(f"No routed slot visible ({meas.rows}/{meas.attempted} scan rows).")
         if prediction and prediction[0]:
@@ -361,6 +424,7 @@ class ImageViewer(QDialog):
 # ---------------------------------------------------------------------------
 # main window
 # ---------------------------------------------------------------------------
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -383,7 +447,7 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self.thumbs: ThumbnailLoader | None = None
         self.label_paths: list[str] = []
-        self.label_runs: dict[str, object] = {}   # picture path -> its Run, for ProductId
+        self.label_runs: dict[str, object] = {}  # picture path -> its Run, for ProductId
         self.seen_live: set[str] = set()
         self.live_rows: list[dict] = []
         self._run_cache: dict[str, list] = {}
@@ -441,8 +505,14 @@ class MainWindow(QMainWindow):
 
     def _busy(self, busy):
         self.progress.setVisible(busy)
-        for b in (self.btn_calibrate, self.btn_inspect, self.btn_list_recipes,
-                  self.btn_index, self.btn_train, self.btn_label_load):
+        for b in (
+            self.btn_calibrate,
+            self.btn_inspect,
+            self.btn_list_recipes,
+            self.btn_index,
+            self.btn_train,
+            self.btn_label_load,
+        ):
             b.setEnabled(not busy)
 
     def _on_progress(self, done, total, label):
@@ -486,8 +556,7 @@ class MainWindow(QMainWindow):
         try:
             self.picture_index = index_pictures(self.cfg.picture_dir)
         except OSError as exc:
-            QMessageBox.warning(self, "Picture index",
-                                f"Cannot read the picture folder:\n{exc}")
+            QMessageBox.warning(self, "Picture index", f"Cannot read the picture folder:\n{exc}")
             return False
         finally:
             QApplication.restoreOverrideCursor()
@@ -497,8 +566,11 @@ class MainWindow(QMainWindow):
     def _report_index(self):
         days = len(self.picture_index)
         total = sum(len(v) for v in self.picture_index.values())
-        text = (f"{total:,} images over {days} days" if days
-                else "no images found in the picture folder")
+        text = (
+            f"{total:,} images over {days} days"
+            if days
+            else "no images found in the picture folder"
+        )
         if hasattr(self, "lbl_index"):
             self.lbl_index.setText(f"index: {text}  -  {time.strftime('%H:%M:%S')}")
         return text
@@ -511,14 +583,14 @@ class MainWindow(QMainWindow):
 
         def job(worker):
             return index_pictures(
-                cfg.picture_dir,
-                progress=lambda n: worker.progress.emit(n, n, "Indexing pictures"))
+                cfg.picture_dir, progress=lambda n: worker.progress.emit(n, n, "Indexing pictures")
+            )
 
         def finished(result):
             self.picture_index = result
-            self._run_cache.clear()      # picture lists per run are now stale
+            self._run_cache.clear()  # picture lists per run are now stale
             self._busy(False)
-            self._resync_day_combos()    # days whose pictures just landed appear now
+            self._resync_day_combos()  # days whose pictures just landed appear now
             text = self._report_index()
             if not quiet:
                 self.status(f"Picture index rebuilt: {text}")
@@ -556,8 +628,7 @@ class MainWindow(QMainWindow):
             return
         self._fill_day_combo(combo, shown)
         if not shown:
-            self.status(f"No day has pictures yet - {hidden} run days waiting.",
-                        theme.ALERT_RED)
+            self.status(f"No day has pictures yet - {hidden} run days waiting.", theme.ALERT_RED)
         else:
             note = f"  ({hidden} without pictures hidden)" if hidden else ""
             self.status(f"Found {len(shown)} days with pictures{note}.")
@@ -580,9 +651,14 @@ class MainWindow(QMainWindow):
         title_row.addStretch(1)
 
         self.kpi = {}
-        for caption, colour in (("PICTURES", theme.TEXT), ("PANELS", theme.ACCENT_DARK),
-                                ("PASS", theme.ONLINE_GREEN), ("NG", theme.ALERT_RED),
-                                ("UNJUDGED", theme.RUNNING_ORANGE), ("MEAN mm", theme.TEXT)):
+        for caption, colour in (
+            ("PICTURES", theme.TEXT),
+            ("PANELS", theme.ACCENT_DARK),
+            ("PASS", theme.ONLINE_GREEN),
+            ("NG", theme.ALERT_RED),
+            ("UNJUDGED", theme.RUNNING_ORANGE),
+            ("MEAN mm", theme.TEXT),
+        ):
             card = KpiCard(caption, colour)
             self.kpi[caption] = card
             title_row.addWidget(card)
@@ -603,7 +679,8 @@ class MainWindow(QMainWindow):
         self.chk_overlay_dash = QCheckBox("Overlay")
         self.chk_overlay_dash.setToolTip(
             "Draw the measured edges on the picture. Turn it off to look at the "
-            "bare cut - the measurement itself is unaffected either way.")
+            "bare cut - the measurement itself is unaffected either way."
+        )
         self.chk_overlay_dash.setChecked(self.cfg.show_overlay)
         self.chk_overlay_dash.toggled.connect(self._toggle_overlay)
         controls.addWidget(self.chk_live)
@@ -637,7 +714,8 @@ class MainWindow(QMainWindow):
         note = QLabel(
             "Each new image is measured against the calibrated baseline and, when a model "
             "is trained, classified GOOD/NG from its Sobel edge map. Machine data is only "
-            "ever read.")
+            "ever read."
+        )
         note.setStyleSheet(f"color:{theme.MUTED}; border:none; background:transparent;")
         note.setWordWrap(True)
         summary.body.addWidget(note)
@@ -663,7 +741,8 @@ class MainWindow(QMainWindow):
         self.pos_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.lbl_no_cards = QLabel("Waiting for the first pictures of a panel...")
         self.lbl_no_cards.setStyleSheet(
-            f"color:{theme.MUTED}; border:none; background:transparent;")
+            f"color:{theme.MUTED}; border:none; background:transparent;"
+        )
         self.pos_grid.addWidget(self.lbl_no_cards, 0, 0)
 
         self.pos_scroll = QScrollArea()
@@ -671,7 +750,8 @@ class MainWindow(QMainWindow):
         self.pos_scroll.setWidget(self.pos_holder)
         self.pos_scroll.setStyleSheet(
             f"QScrollArea {{ background:{theme.PANEL}; border:1px solid {theme.BORDER};"
-            "border-radius:3px; }")
+            "border-radius:3px; }"
+        )
         split.addWidget(self.pos_scroll)
         split.splitterMoved.connect(lambda *_: self._layout_pos_cards(force=True))
 
@@ -682,7 +762,8 @@ class MainWindow(QMainWindow):
         self.live_image.setAlignment(Qt.AlignCenter)
         self.live_image.setMinimumSize(520, 380)
         self.live_image.setStyleSheet(
-            f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER}; border-radius:3px;")
+            f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER}; border-radius:3px;"
+        )
         rl.addWidget(self.live_image, 1)
         self.legend_dash = OverlayLegend()
         rl.addWidget(self.legend_dash)
@@ -695,7 +776,8 @@ class MainWindow(QMainWindow):
         self.live_info.setFont(QFont("Consolas", 9))
         self.live_info.setStyleSheet(
             f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER};"
-            "border-radius:3px; padding:8px;")
+            "border-radius:3px; padding:8px;"
+        )
         self.live_info.setWordWrap(True)
         rl.addWidget(self.live_info)
         split.addWidget(right)
@@ -719,8 +801,9 @@ class MainWindow(QMainWindow):
     def _filter_live(self):
         needle = self.edit_sn.text().strip().lower()
         shown = self._refresh_pos_cards()
-        self.status(f"{shown} position(s) match SN '{needle}'." if needle
-                    else f"{shown} position(s).")
+        self.status(
+            f"{shown} position(s) match SN '{needle}'." if needle else f"{shown} position(s)."
+        )
 
     # ---- the position grid ------------------------------------------------
     def _visible_records(self) -> dict[int, dict]:
@@ -761,8 +844,9 @@ class MainWindow(QMainWindow):
             name = self.labels.label(run.key, pos) if run else ""
             dev_w, dev_e = record["dev_w"], record["dev_e"]
             rough, side = record.get("rough", ""), record.get("side", "left")
-            over = ((dev_w is not None and abs(dev_w) > cfg.width_tol_mm)
-                    or (dev_e is not None and abs(dev_e) > cfg.edge_tol_mm))
+            over = (dev_w is not None and abs(dev_w) > cfg.width_tol_mm) or (
+                dev_e is not None and abs(dev_e) > cfg.edge_tol_mm
+            )
             if record["cls"] == "NG" or over:
                 tint = theme.TINT_NG
             elif record["cls"] == "GOOD":
@@ -776,11 +860,16 @@ class MainWindow(QMainWindow):
             elif over:
                 verdict = "OUT OF TOL"
             elif not record.get("has_model", True):
-                verdict = "no model"      # nothing trained for this ProductId yet
+                verdict = "no model"  # nothing trained for this ProductId yet
             else:
                 verdict = "-"
-            colour = (theme.ALERT_RED if verdict in ("NG", "OUT OF TOL")
-                      else theme.ONLINE_GREEN if verdict == "GOOD" else theme.MUTED)
+            colour = (
+                theme.ALERT_RED
+                if verdict in ("NG", "OUT OF TOL")
+                else theme.ONLINE_GREEN
+                if verdict == "GOOD"
+                else theme.MUTED
+            )
             if dev_e is None:
                 dev_text = "no baseline yet"
             elif rough:
@@ -799,9 +888,13 @@ class MainWindow(QMainWindow):
             card.show_record(
                 caption=name or (f"SN {record['sn']}" if record["sn"] else "unmatched"),
                 width_text=width_text,
-                dev_text=dev_text, verdict=verdict, verdict_colour=colour,
+                dev_text=dev_text,
+                verdict=verdict,
+                verdict_colour=colour,
                 foot=f"{stamp[:2]}:{stamp[2:4]}:{stamp[4:]}{conf}",
-                tint=tint, image_path=record["path"])
+                tint=tint,
+                image_path=record["path"],
+            )
             card.set_selected(pos == self.selected_pos)
 
         self._layout_pos_cards()
@@ -835,7 +928,7 @@ class MainWindow(QMainWindow):
         self.kpi["NG"].set_value(sum(1 for r in rows if r["cls"] == "NG"))
         self.kpi["UNJUDGED"].set_value(sum(1 for r in rows if not r["cls"]))
         widths = [r["width_mm"] for r in rows if r["width_mm"] is not None]
-        self.kpi["MEAN mm"].set_value(f"{sum(widths)/len(widths):.3f}" if widths else "-")
+        self.kpi["MEAN mm"].set_value(f"{sum(widths) / len(widths):.3f}" if widths else "-")
 
     def _toggle_live(self):
         if self.chk_live.isChecked():
@@ -911,8 +1004,11 @@ class MainWindow(QMainWindow):
             return
         fresh = [p for p in newest if str(p) not in self.seen_live]
         if not fresh:
-            self.header.set_status("Watching", theme.ONLINE_GREEN,
-                                   f"no new images  -  checked {time.strftime('%H:%M:%S')}")
+            self.header.set_status(
+                "Watching",
+                theme.ONLINE_GREEN,
+                f"no new images  -  checked {time.strftime('%H:%M:%S')}",
+            )
             return
 
         if not hasattr(self, "live_rows"):
@@ -950,14 +1046,22 @@ class MainWindow(QMainWindow):
                     cls, conf = "error", 0.0
 
             record = {
-                "path": str(path), "name": path.name,
+                "path": str(path),
+                "name": path.name,
                 "time": path.stem.split("_")[-1],
-                "sn": run.sn if run else "", "product": run.product_id if run else "",
+                "sn": run.sn if run else "",
+                "product": run.product_id if run else "",
                 "table": run.table.replace("Table", "") if run else "",
-                "pos": pos, "run": run,
+                "pos": pos,
+                "run": run,
                 "width_mm": cfg.px_to_mm(meas.width) if meas.width_usable else None,
-                "dev_w": dev_w, "dev_e": dev_e, "cls": cls, "conf": conf,
-                "rough": rough, "side": side, "meas": meas,
+                "dev_w": dev_w,
+                "dev_e": dev_e,
+                "cls": cls,
+                "conf": conf,
+                "rough": rough,
+                "side": side,
+                "meas": meas,
                 "has_model": classifier is not None,
             }
             self.live_rows.append(record)
@@ -971,9 +1075,12 @@ class MainWindow(QMainWindow):
             self._select_pos(newest_pos)
         elif self.selected_pos in self.live_by_pos:
             self._show_live_selection()
-        self.status(f"{len(fresh)} new image(s)", theme.ONLINE_GREEN,
-                    f"last update {time.strftime('%H:%M:%S')}  -  "
-                    f"{len(self.live_rows)} in feed  -  {shown} position(s)")
+        self.status(
+            f"{len(fresh)} new image(s)",
+            theme.ONLINE_GREEN,
+            f"last update {time.strftime('%H:%M:%S')}  -  "
+            f"{len(self.live_rows)} in feed  -  {shown} position(s)",
+        )
 
     # ---- the overlay switch ----------------------------------------------
     def _picture_pixmap(self, path: str, meas=None):
@@ -1015,20 +1122,24 @@ class MainWindow(QMainWindow):
         ib = baseline.indices.get(str(pos)) if baseline else None
 
         pix = self._picture_pixmap(record["path"], meas)
-        self.live_image.setPixmap(pix.scaled(self.live_image.width() - 10,
-                                             self.live_image.height() - 10,
-                                             Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.live_image.setPixmap(
+            pix.scaled(
+                self.live_image.width() - 10,
+                self.live_image.height() - 10,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        )
 
         if record["cls"]:
             colour = theme.ONLINE_GREEN if record["cls"] == "GOOD" else theme.ALERT_RED
             self.live_verdict.setText(f"{record['cls']}   {record['conf']:.0%}")
-            self.live_verdict.setStyleSheet(
-                f"color:{colour}; border:none; background:transparent;")
+            self.live_verdict.setStyleSheet(f"color:{colour}; border:none; background:transparent;")
         else:
-            self.live_verdict.setText(
-                f"no model for {run.key}" if run else "no model trained")
+            self.live_verdict.setText(f"no model for {run.key}" if run else "no model trained")
             self.live_verdict.setStyleSheet(
-                f"color:{theme.MUTED}; border:none; background:transparent;")
+                f"color:{theme.MUTED}; border:none; background:transparent;"
+            )
 
         lines = [f"image      {record['name']}"]
         if run is not None:
@@ -1036,8 +1147,7 @@ class MainWindow(QMainWindow):
                 f"panel      SN {run.sn}   {run.product_id}   {run.table}"
                 f"   {'PASS' if run.passed else 'FAIL'}",
                 f"recipe     {run.recipe}",
-                f"position   {pos} of {len(run.pictures)}   "
-                f"{self.labels.label(run.key, pos)}",
+                f"position   {pos} of {len(run.pictures)}   {self.labels.label(run.key, pos)}",
                 f"panel run  {run.start:%Y-%m-%d %H:%M:%S} -> {run.end:%H:%M:%S}"
                 f"   tact {run.tact_time}s   sub-boards {run.sub_boards}",
                 f"alignment  X {run.offset_x:+.4f} mm   Y {run.offset_y:+.4f} mm"
@@ -1051,42 +1161,61 @@ class MainWindow(QMainWindow):
         rough, side = record.get("rough", ""), record.get("side", "left")
         if meas.valid:
             if rough:
-                lines.append(f"slot       {side} edge {meas.ref_edge} px   "
-                             f"width not measured")
+                lines.append(f"slot       {side} edge {meas.ref_edge} px   width not measured")
             else:
-                lines.append(f"slot       width {meas.width} px = "
-                             f"{cfg.px_to_mm(meas.width):.4f} mm   "
-                             f"left {meas.slot_left}  right {meas.slot_right}")
-            lines.append(f"scan       {meas.rows}/{meas.attempted} rows   spread "
-                         f"{cfg.px_to_mm(meas.width_sd):.4f} mm")
-            lines.append(f"edges      left wanders {cfg.px_to_mm(meas.left_spread):.4f} mm"
-                         f"   right {cfg.px_to_mm(meas.right_spread):.4f} mm")
+                lines.append(
+                    f"slot       width {meas.width} px = "
+                    f"{cfg.px_to_mm(meas.width):.4f} mm   "
+                    f"left {meas.slot_left}  right {meas.slot_right}"
+                )
+            lines.append(
+                f"scan       {meas.rows}/{meas.attempted} rows   spread "
+                f"{cfg.px_to_mm(meas.width_sd):.4f} mm"
+            )
+            lines.append(
+                f"edges      left wanders {cfg.px_to_mm(meas.left_spread):.4f} mm"
+                f"   right {cfg.px_to_mm(meas.right_spread):.4f} mm"
+            )
             if rough:
-                lines.append(f"dropped    {rough} edge is not straight - it is a tab or "
-                             f"contour, so only the {side} edge is judged")
+                lines.append(
+                    f"dropped    {rough} edge is not straight - it is a tab or "
+                    f"contour, so only the {side} edge is judged"
+                )
         else:
-            lines.append(f"slot       not measurable "
-                         f"({meas.rows}/{meas.attempted} rows found edges)")
+            lines.append(
+                f"slot       not measurable ({meas.rows}/{meas.attempted} rows found edges)"
+            )
         if ib and not rough:
-            lines.append(f"baseline   width {ib.width_mean:.2f} px "
-                         f"({cfg.px_to_mm(ib.width_mean):.4f} mm)   sd "
-                         f"{cfg.px_to_mm(ib.width_sd):.4f} mm   n={ib.samples}")
+            lines.append(
+                f"baseline   width {ib.width_mean:.2f} px "
+                f"({cfg.px_to_mm(ib.width_mean):.4f} mm)   sd "
+                f"{cfg.px_to_mm(ib.width_sd):.4f} mm   n={ib.samples}"
+            )
         elif ib:
-            lines.append(f"baseline   {side} edge {ib.edge(side):.2f} px   sd "
-                         f"{cfg.px_to_mm(ib.edge_sd(side)):.4f} mm   n={ib.samples}")
+            lines.append(
+                f"baseline   {side} edge {ib.edge(side):.2f} px   sd "
+                f"{cfg.px_to_mm(ib.edge_sd(side)):.4f} mm   n={ib.samples}"
+            )
         if record["dev_e"] is None:
             lines.append("deviation  no baseline for this position - calibrate first")
         elif rough:
-            verdict = ("within tolerance" if abs(record["dev_e"]) <= cfg.edge_tol_mm
-                       else "OUT OF TOLERANCE")
-            lines.append(f"deviation  shift {record['dev_e']:+.4f} mm "
-                         f"({side} edge)   -> {verdict}")
+            verdict = (
+                "within tolerance"
+                if abs(record["dev_e"]) <= cfg.edge_tol_mm
+                else "OUT OF TOLERANCE"
+            )
+            lines.append(f"deviation  shift {record['dev_e']:+.4f} mm ({side} edge)   -> {verdict}")
         else:
-            verdict = ("within tolerance"
-                       if abs(record["dev_w"]) <= cfg.width_tol_mm
-                       and abs(record["dev_e"]) <= cfg.edge_tol_mm else "OUT OF TOLERANCE")
-            lines.append(f"deviation  width {record['dev_w']:+.4f} mm   "
-                         f"shift {record['dev_e']:+.4f} mm   -> {verdict}")
+            verdict = (
+                "within tolerance"
+                if abs(record["dev_w"]) <= cfg.width_tol_mm
+                and abs(record["dev_e"]) <= cfg.edge_tol_mm
+                else "OUT OF TOLERANCE"
+            )
+            lines.append(
+                f"deviation  width {record['dev_w']:+.4f} mm   "
+                f"shift {record['dev_e']:+.4f} mm   -> {verdict}"
+            )
         lines.append(f"label      {self.label_store.cls_of(record['path']) or '-'}")
         self.live_info.setText("\n".join(lines))
 
@@ -1114,7 +1243,7 @@ class MainWindow(QMainWindow):
         folder = self._model_dir()
         if not folder.exists():
             return []
-        return sorted(p.stem[len(MODEL_PREFIX):] for p in folder.glob(f"{MODEL_PREFIX}*.pt"))
+        return sorted(p.stem[len(MODEL_PREFIX) :] for p in folder.glob(f"{MODEL_PREFIX}*.pt"))
 
     def _classifier_for(self, key: str):
         """The model trained for this ProductId|table, or None if there is none.
@@ -1127,8 +1256,7 @@ class MainWindow(QMainWindow):
         if key not in self.classifiers:
             path = self._model_path(key)
             try:
-                self.classifiers[key] = (CutClassifier.load(path)
-                                         if path.exists() else None)
+                self.classifiers[key] = CutClassifier.load(path) if path.exists() else None
             except Exception:
                 self.classifiers[key] = None
         return self.classifiers[key]
@@ -1140,7 +1268,8 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_model.setText(
                 f"models: {len(trained)} - {', '.join(trained[:2])}"
-                + (" ..." if len(trained) > 2 else ""))
+                + (" ..." if len(trained) > 2 else "")
+            )
 
     # ======================================================================
     # Inspect
@@ -1161,8 +1290,15 @@ class MainWindow(QMainWindow):
         btn_names.clicked.connect(self._name_positions)
         btn_export = QPushButton("Export CSV")
         btn_export.clicked.connect(self._export)
-        for w in (QLabel("Day"), self.cmb_ins_day, btn_days, self.btn_inspect,
-                  self.chk_flagged, btn_names, btn_export):
+        for w in (
+            QLabel("Day"),
+            self.cmb_ins_day,
+            btn_days,
+            self.btn_inspect,
+            self.chk_flagged,
+            btn_names,
+            btn_export,
+        ):
             top.addWidget(w)
         top.addStretch(1)
         outer.addLayout(top)
@@ -1173,7 +1309,9 @@ class MainWindow(QMainWindow):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.addWidget(QLabel("Panels produced (click one)"))
         self.tbl_runs = QTableWidget(0, 6)
-        self.tbl_runs.setHorizontalHeaderLabels(["SN", "Time", "Product", "Table", "Result", "Status"])
+        self.tbl_runs.setHorizontalHeaderLabels(
+            ["SN", "Time", "Product", "Table", "Result", "Status"]
+        )
         self.tbl_runs.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_runs.setSelectionBehavior(QTableWidget.SelectRows)
         self.tbl_runs.verticalHeader().setVisible(False)
@@ -1187,8 +1325,9 @@ class MainWindow(QMainWindow):
         rl.setContentsMargins(0, 0, 0, 0)
         self.lbl_panel = QLabel("Select a panel to see its inspection pictures.")
         self.lbl_panel.setFont(QFont("Consolas", 10))
-        self.lbl_panel.setStyleSheet("background:#f5f5f5; border:1px solid #ddd;"
-                                     "border-radius:4px; padding:8px;")
+        self.lbl_panel.setStyleSheet(
+            "background:#f5f5f5; border:1px solid #ddd;border-radius:4px; padding:8px;"
+        )
         self.lbl_panel.setWordWrap(True)
         rl.addWidget(self.lbl_panel)
         self.gallery = QListWidget()
@@ -1218,9 +1357,13 @@ class MainWindow(QMainWindow):
 
         def job(worker):
             runs = load_day(cfg.result_dir, day, self.picture_index)[: cfg.max_runs_per_scan]
-            return inspect(cfg, runs, self.store,
-                           progress=lambda d, t: worker.progress.emit(d, t, "Inspecting panel"),
-                           cancelled=worker.is_cancelled)
+            return inspect(
+                cfg,
+                runs,
+                self.store,
+                progress=lambda d, t: worker.progress.emit(d, t, "Inspecting panel"),
+                cancelled=worker.is_cancelled,
+            )
 
         def finished(results):
             self.results = results
@@ -1229,8 +1372,10 @@ class MainWindow(QMainWindow):
             for r in results:
                 counts[r.status] = counts.get(r.status, 0) + 1
             self._busy(False)
-            self.status(f"{day}: {len(results)} panels - "
-                        + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+            self.status(
+                f"{day}: {len(results)} panels - "
+                + ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+            )
             if self.tbl_runs.rowCount():
                 self.tbl_runs.selectRow(0)
 
@@ -1245,9 +1390,14 @@ class MainWindow(QMainWindow):
         for r in rows:
             row = self.tbl_runs.rowCount()
             self.tbl_runs.insertRow(row)
-            values = [r.run.sn or "-", f"{r.run.start:%H:%M:%S}", r.run.product_id,
-                      r.run.table.replace("Table", ""),
-                      "PASS" if r.run.passed else "FAIL", r.status]
+            values = [
+                r.run.sn or "-",
+                f"{r.run.start:%H:%M:%S}",
+                r.run.product_id,
+                r.run.table.replace("Table", ""),
+                "PASS" if r.run.passed else "FAIL",
+                r.status,
+            ]
             colour = STATUS_COLORS.get(r.status)
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -1271,7 +1421,8 @@ class MainWindow(QMainWindow):
             f"start {run.start:%Y-%m-%d %H:%M:%S}    tact {run.tact_time}s    "
             f"sub-boards {run.sub_boards}    pictures {len(run.pictures)}\n"
             f"alignment X {run.offset_x:+.4f} mm   Y {run.offset_y:+.4f} mm"
-            + (f"\n{result.note}" if result.note else ""))
+            + (f"\n{result.note}" if result.note else "")
+        )
 
         self.gallery.clear()
         if self.thumbs:
@@ -1285,13 +1436,17 @@ class MainWindow(QMainWindow):
             if detail is None or not detail.ok:
                 caption, colour = f"{name}\n(no slot visible)", COLOR_GREY
             else:
-                bad = ((detail.width_judged
-                        and abs(detail.width_dev_mm) > self.cfg.width_tol_mm)
-                       or abs(detail.edge_dev_mm) > self.cfg.edge_tol_mm)
-                head = (f"width {detail.width_dev_mm:+.3f} mm" if detail.width_judged
-                        else f"{detail.rough_side} edge dropped")
-                caption = (f"{name}\n{head}"
-                           f"{'  NG' if bad else ''}\nshift {detail.edge_dev_mm:+.3f} mm")
+                bad = (
+                    detail.width_judged and abs(detail.width_dev_mm) > self.cfg.width_tol_mm
+                ) or abs(detail.edge_dev_mm) > self.cfg.edge_tol_mm
+                head = (
+                    f"width {detail.width_dev_mm:+.3f} mm"
+                    if detail.width_judged
+                    else f"{detail.rough_side} edge dropped"
+                )
+                caption = (
+                    f"{name}\n{head}{'  NG' if bad else ''}\nshift {detail.edge_dev_mm:+.3f} mm"
+                )
                 colour = COLOR_NG if bad else COLOR_OK
             item = QListWidgetItem(QIcon(placeholder), caption)
             item.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -1300,8 +1455,10 @@ class MainWindow(QMainWindow):
             self.gallery.addItem(item)
         self.thumbs = ThumbnailLoader(list(run.pictures))
         self.thumbs.ready.connect(
-            lambda i, pm: self.gallery.item(i).setIcon(QIcon(pm))
-            if i < self.gallery.count() else None)
+            lambda i, pm: (
+                self.gallery.item(i).setIcon(QIcon(pm)) if i < self.gallery.count() else None
+            )
+        )
         self.thumbs.start()
 
     def _open_thumb(self, item):
@@ -1315,17 +1472,20 @@ class MainWindow(QMainWindow):
                 pred = classifier.predict_one(path)
             except Exception:
                 pred = None
-        ImageViewer(self.cfg, path, bl_idx,
-                    self.labels.label(self.current.run.key, index), pred, self).exec()
+        ImageViewer(
+            self.cfg, path, bl_idx, self.labels.label(self.current.run.key, index), pred, self
+        ).exec()
 
     def _name_positions(self):
         if not self.current:
             self.status("Select a panel first.")
             return
         QMessageBox.information(
-            self, "Name positions",
+            self,
+            "Name positions",
             "Position names are edited on the Label tab, where you can see each "
-            "picture while you name it.")
+            "picture while you name it.",
+        )
 
     def _export(self):
         if not self.results:
@@ -1341,23 +1501,66 @@ class MainWindow(QMainWindow):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as fh:
             wr = csv.writer(fh)
-            wr.writerow(["SN", "Start", "Product", "Recipe", "Table", "Result",
-                         "OffsetX", "OffsetY", "PanelStatus", "Note",
-                         "Position", "PositionName", "WidthDevMm", "EdgeDevMm", "Label"])
+            wr.writerow(
+                [
+                    "SN",
+                    "Start",
+                    "Product",
+                    "Recipe",
+                    "Table",
+                    "Result",
+                    "OffsetX",
+                    "OffsetY",
+                    "PanelStatus",
+                    "Note",
+                    "Position",
+                    "PositionName",
+                    "WidthDevMm",
+                    "EdgeDevMm",
+                    "Label",
+                ]
+            )
             for r in self.results:
                 if not r.details:
-                    wr.writerow([r.run.sn, f"{r.run.start:%Y-%m-%d %H:%M:%S}", r.run.product_id,
-                                 r.run.recipe, r.run.table, "PASS" if r.run.passed else "FAIL",
-                                 f"{r.run.offset_x:.6f}", f"{r.run.offset_y:.6f}",
-                                 r.status, r.note, "", "", "", "", ""])
+                    wr.writerow(
+                        [
+                            r.run.sn,
+                            f"{r.run.start:%Y-%m-%d %H:%M:%S}",
+                            r.run.product_id,
+                            r.run.recipe,
+                            r.run.table,
+                            "PASS" if r.run.passed else "FAIL",
+                            f"{r.run.offset_x:.6f}",
+                            f"{r.run.offset_y:.6f}",
+                            r.status,
+                            r.note,
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]
+                    )
                 for d in r.details:
-                    wr.writerow([r.run.sn, f"{r.run.start:%Y-%m-%d %H:%M:%S}", r.run.product_id,
-                                 r.run.recipe, r.run.table, "PASS" if r.run.passed else "FAIL",
-                                 f"{r.run.offset_x:.6f}", f"{r.run.offset_y:.6f}",
-                                 r.status, r.note, d.index,
-                                 self.labels.label(r.run.key, d.index),
-                                 d.width_dev_mm if d.ok else "", d.edge_dev_mm if d.ok else "",
-                                 self.label_store.cls_of(d.path)])
+                    wr.writerow(
+                        [
+                            r.run.sn,
+                            f"{r.run.start:%Y-%m-%d %H:%M:%S}",
+                            r.run.product_id,
+                            r.run.recipe,
+                            r.run.table,
+                            "PASS" if r.run.passed else "FAIL",
+                            f"{r.run.offset_x:.6f}",
+                            f"{r.run.offset_y:.6f}",
+                            r.status,
+                            r.note,
+                            d.index,
+                            self.labels.label(r.run.key, d.index),
+                            d.width_dev_mm if d.ok else "",
+                            d.edge_dev_mm if d.ok else "",
+                            self.label_store.cls_of(d.path),
+                        ]
+                    )
         self.status(f"Exported to {path}")
 
     # ======================================================================
@@ -1383,7 +1586,8 @@ class MainWindow(QMainWindow):
 
         self.tbl_slots = QTableWidget(0, 5)
         self.tbl_slots.setHorizontalHeaderLabels(
-            ["#", "Centre X mm", "Centre Y mm", "Width mm", "Length mm"])
+            ["#", "Centre X mm", "Centre Y mm", "Width mm", "Length mm"]
+        )
         self.tbl_slots.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tbl_slots.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_slots.setMaximumHeight(220)
@@ -1418,8 +1622,7 @@ class MainWindow(QMainWindow):
             w, h = seg.size_mm
             row = self.tbl_slots.rowCount()
             self.tbl_slots.insertRow(row)
-            for col, value in enumerate([str(i), f"{cx:.2f}", f"{cy:.2f}",
-                                         f"{w:.3f}", f"{h:.3f}"]):
+            for col, value in enumerate([str(i), f"{cx:.2f}", f"{cy:.2f}", f"{w:.3f}", f"{h:.3f}"]):
                 self.tbl_slots.setItem(row, col, QTableWidgetItem(value))
         self.status(tp.summary())
 
@@ -1441,19 +1644,28 @@ class MainWindow(QMainWindow):
         self.spin_lbl_max.setSingleStep(20)
         self.spin_lbl_max.setSpecialValueText("all")
         self.spin_lbl_max.setValue(300)
-        self.spin_lbl_max.setToolTip("How many of the day's pictures to load. "
-                                     "Step below 20 to reach 'all'.")
+        self.spin_lbl_max.setToolTip(
+            "How many of the day's pictures to load. Step below 20 to reach 'all'."
+        )
         self.lbl_counts = QLabel("")
         self.lbl_counts.setStyleSheet("color:#555;")
         self.chk_overlay_lbl = QCheckBox("Overlay")
         self.chk_overlay_lbl.setToolTip(
             "Draw the measured edges on the picture and on every thumbnail. "
-            "Turn it off to judge the bare cut.")
+            "Turn it off to judge the bare cut."
+        )
         self.chk_overlay_lbl.setChecked(self.cfg.show_overlay)
         self.chk_overlay_lbl.toggled.connect(self._toggle_overlay)
-        for w in (QLabel("Day"), self.cmb_lbl_day, btn_days,
-                  QLabel("max"), self.spin_lbl_max, self.btn_label_load,
-                  self.chk_overlay_lbl, self.lbl_counts):
+        for w in (
+            QLabel("Day"),
+            self.cmb_lbl_day,
+            btn_days,
+            QLabel("max"),
+            self.spin_lbl_max,
+            self.btn_label_load,
+            self.chk_overlay_lbl,
+            self.lbl_counts,
+        ):
             top.addWidget(w)
         top.addStretch(1)
         outer.addLayout(top)
@@ -1484,7 +1696,8 @@ class MainWindow(QMainWindow):
         self.lbl_preview.setAlignment(Qt.AlignCenter)
         self.lbl_preview.setMinimumSize(460, 340)
         self.lbl_preview.setStyleSheet(
-            f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER}; border-radius:3px;")
+            f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER}; border-radius:3px;"
+        )
         ml.addWidget(self.lbl_preview, 1)
         self.legend_lbl = OverlayLegend()
         ml.addWidget(self.legend_lbl)
@@ -1497,17 +1710,20 @@ class MainWindow(QMainWindow):
         self.lbl_preview_info.setFont(QFont("Consolas", 9))
         self.lbl_preview_info.setStyleSheet(
             f"background:{theme.PANEL_2}; border:1px solid {theme.BORDER};"
-            "border-radius:3px; padding:8px;")
+            "border-radius:3px; padding:8px;"
+        )
         self.lbl_preview_info.setWordWrap(True)
         ml.addWidget(self.lbl_preview_info)
         split.addWidget(middle)
 
         side = QWidget()
         sl = QVBoxLayout(side)
-        note = QLabel("Click a picture to see it full size, then click GOOD or NG.\n"
-                      "Ctrl or Shift selects several at once and labels them together.\n"
-                      "If a picture cannot be judged, leave it unlabelled - "
-                      "unlabelled images are simply not trained on.")
+        note = QLabel(
+            "Click a picture to see it full size, then click GOOD or NG.\n"
+            "Ctrl or Shift selects several at once and labels them together.\n"
+            "If a picture cannot be judged, leave it unlabelled - "
+            "unlabelled images are simply not trained on."
+        )
         note.setWordWrap(True)
         sl.addWidget(note)
         self.class_buttons = []
@@ -1516,8 +1732,9 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, c=cls: self._apply_label(c))
             colour = CLASS_COLORS.get(cls)
             if colour:
-                b.setStyleSheet(f"background:{colour.name()}; padding:14px;"
-                                "font-weight:bold; font-size:15px;")
+                b.setStyleSheet(
+                    f"background:{colour.name()}; padding:14px;font-weight:bold; font-size:15px;"
+                )
             sl.addWidget(b)
             self.class_buttons.append(b)
         btn_clear = QPushButton("Clear label")
@@ -1550,36 +1767,53 @@ class MainWindow(QMainWindow):
         cfg = self.cfg
         meas = _measure(cfg, path)
         pix = self._picture_pixmap(path, meas)
-        self.lbl_preview.setPixmap(pix.scaled(self.lbl_preview.width() - 10,
-                                              self.lbl_preview.height() - 10,
-                                              Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.lbl_preview.setPixmap(
+            pix.scaled(
+                self.lbl_preview.width() - 10,
+                self.lbl_preview.height() - 10,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        )
 
         cls = self.label_store.cls_of(path)
         chosen = len(self.lbl_gallery.selectedItems())
-        colour = (theme.ONLINE_GREEN if cls == "GOOD"
-                  else theme.ALERT_RED if cls == "NG" else theme.MUTED)
+        colour = (
+            theme.ONLINE_GREEN if cls == "GOOD" else theme.ALERT_RED if cls == "NG" else theme.MUTED
+        )
         self.lbl_preview_verdict.setText(
             f"label: {cls or 'not labelled'}"
-            + (f"    ({chosen} pictures selected)" if chosen > 1 else ""))
+            + (f"    ({chosen} pictures selected)" if chosen > 1 else "")
+        )
         self.lbl_preview_verdict.setStyleSheet(
-            f"color:{colour}; border:none; background:transparent;")
+            f"color:{colour}; border:none; background:transparent;"
+        )
 
         lines = [f"image      {Path(path).name}"]
         if meas.valid:
             if meas.rough_side:
-                lines.append(f"slot       {meas.ref_side} edge {meas.ref_edge} px   "
-                             f"({meas.rough_side} edge is a tab or contour, not measured)")
+                lines.append(
+                    f"slot       {meas.ref_side} edge {meas.ref_edge} px   "
+                    f"({meas.rough_side} edge is a tab or contour, not measured)"
+                )
             else:
-                lines.append(f"slot       width {meas.width} px = "
-                             f"{cfg.px_to_mm(meas.width):.4f} mm   "
-                             f"left {meas.slot_left}  right {meas.slot_right}")
-            lines.append(f"scan       {meas.rows}/{meas.attempted} rows   spread "
-                         f"{cfg.px_to_mm(meas.width_sd):.4f} mm")
-            lines.append(f"edges      left wanders {cfg.px_to_mm(meas.left_spread):.4f} mm"
-                         f"   right {cfg.px_to_mm(meas.right_spread):.4f} mm")
+                lines.append(
+                    f"slot       width {meas.width} px = "
+                    f"{cfg.px_to_mm(meas.width):.4f} mm   "
+                    f"left {meas.slot_left}  right {meas.slot_right}"
+                )
+            lines.append(
+                f"scan       {meas.rows}/{meas.attempted} rows   spread "
+                f"{cfg.px_to_mm(meas.width_sd):.4f} mm"
+            )
+            lines.append(
+                f"edges      left wanders {cfg.px_to_mm(meas.left_spread):.4f} mm"
+                f"   right {cfg.px_to_mm(meas.right_spread):.4f} mm"
+            )
         else:
-            lines.append(f"slot       not measurable "
-                         f"({meas.rows}/{meas.attempted} rows found edges)")
+            lines.append(
+                f"slot       not measurable ({meas.rows}/{meas.attempted} rows found edges)"
+            )
         classifier = self._classifier_for(self._key_of(path))
         if classifier is not None:
             try:
@@ -1623,11 +1857,14 @@ class MainWindow(QMainWindow):
         if self.thumbs:
             self.thumbs.stop()
             self.thumbs.wait(1200)
-        self.thumbs = ThumbnailLoader(
-            self.label_paths, self.cfg if self.cfg.show_overlay else None)
+        self.thumbs = ThumbnailLoader(self.label_paths, self.cfg if self.cfg.show_overlay else None)
         self.thumbs.ready.connect(
-            lambda i, pm: self.lbl_gallery.item(i).setIcon(QIcon(pm))
-            if i < self.lbl_gallery.count() else None)
+            lambda i, pm: (
+                self.lbl_gallery.item(i).setIcon(QIcon(pm))
+                if i < self.lbl_gallery.count()
+                else None
+            )
+        )
         self.thumbs.start()
 
     def _apply_label(self, cls):
@@ -1644,11 +1881,13 @@ class MainWindow(QMainWindow):
             else:
                 run = self.label_runs.get(path)
                 self.label_store.set(
-                    path, cls,
+                    path,
+                    cls,
                     product=run.product_id if run else "",
                     recipe=run.recipe if run else "",
                     table=run.table if run else "",
-                    sn=run.sn if run else "")
+                    sn=run.sn if run else "",
+                )
                 item.setBackground(CLASS_COLORS.get(cls, COLOR_GREY))
                 item.setText(f"{Path(path).stem}\n{cls}")
         try:
@@ -1657,7 +1896,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Write refused", str(exc))
             return
         self._refresh_label_summary()
-        self._show_label_selection()      # the preview shows the label it just got
+        self._show_label_selection()  # the preview shows the label it just got
         self.status(f"{len(items)} picture(s) labelled {cls or 'cleared'}.")
 
     def _key_of(self, path: str) -> str:
@@ -1764,7 +2003,8 @@ class MainWindow(QMainWindow):
             "Training a product/table that already has a model carries on from that model\n"
             "rather than starting over, so a round of extra labels refines what is there.\n"
             "A different backbone or a different set of classes cannot be carried on and\n"
-            "starts from a fresh head instead - the training report says which happened.")
+            "starts from a fresh head instead - the training report says which happened."
+        )
         outer.addWidget(self.txt_train, 1)
         self._reload_train_products()
         return page
@@ -1785,21 +2025,24 @@ class MainWindow(QMainWindow):
         """Say how many labels this product/table has, and whether it has a model."""
         key = self.cmb_train_product.currentText()
         if not key:
-            self.lbl_train_counts.setText(
-                "no labelled pictures yet - label some on the Label tab")
+            self.lbl_train_counts.setText("no labelled pictures yet - label some on the Label tab")
             return
         counts = self.label_store.counts(key)
         detail = "  ".join(f"{c} {counts.get(c, 0)}" for c in DEFAULT_CLASSES)
         model = self._model_path(key)
         self.lbl_train_counts.setText(
-            f"{detail}   -   {model.name}: {'trained' if model.exists() else 'not trained yet'}")
+            f"{detail}   -   {model.name}: {'trained' if model.exists() else 'not trained yet'}"
+        )
 
     def _train_model(self):
         product = self.cmb_train_product.currentText()
         if not product:
-            QMessageBox.information(self, "Pick a product and table",
-                                    "Label some pictures first - a model is trained "
-                                    "for one ProductId and table at a time.")
+            QMessageBox.information(
+                self,
+                "Pick a product and table",
+                "Label some pictures first - a model is trained "
+                "for one ProductId and table at a time.",
+            )
             return
         ok, msg = self.label_store.usable_for_training(key=product)
         if not ok:
@@ -1822,10 +2065,14 @@ class MainWindow(QMainWindow):
                     previous = CutClassifier.load(previous_path)
                 except (OSError, RuntimeError, ValueError):
                     previous = None
-            report = clf.train(items, epochs=epochs, val_fraction=val,
-                               progress=lambda d, t, m: worker.progress.emit(d, t, m),
-                               cancelled=worker.is_cancelled,
-                               resume_from=previous)
+            report = clf.train(
+                items,
+                epochs=epochs,
+                val_fraction=val,
+                progress=lambda d, t, m: worker.progress.emit(d, t, m),
+                cancelled=worker.is_cancelled,
+                resume_from=previous,
+            )
             return clf, report
 
         def finished(result):
@@ -1838,11 +2085,13 @@ class MainWindow(QMainWindow):
                 f"Product {product}\n\n"
                 + report.text()
                 + "\n\nNOTE: accuracy here is measured on a slice of the same labelled set."
-                  "\nIt tells you the model learned what you taught it - not that the labels"
-                  "\nthemselves were right. Check a few predictions by eye before trusting it."
-                  "\n\nPress 'Save model' to use it on the Dashboard tab.")
-            self.status(f"Trained {product}: val accuracy {report.val_acc:.1%} "
-                        f"in {report.seconds:.1f}s")
+                "\nIt tells you the model learned what you taught it - not that the labels"
+                "\nthemselves were right. Check a few predictions by eye before trusting it."
+                "\n\nPress 'Save model' to use it on the Dashboard tab."
+            )
+            self.status(
+                f"Trained {product}: val accuracy {report.val_acc:.1%} in {report.seconds:.1f}s"
+            )
 
         self._run_worker(job, finished)
 
@@ -1867,9 +2116,12 @@ class MainWindow(QMainWindow):
         if not product:
             self.status("Pick a product/table first - a model belongs to one of each.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, f"Load model for {product}",
-                                              str(self._model_path(product)),
-                                              "PyTorch model (*.pt)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Load model for {product}",
+            str(self._model_path(product)),
+            "PyTorch model (*.pt)",
+        )
         if not path:
             return
         try:
@@ -1893,12 +2145,15 @@ class MainWindow(QMainWindow):
         paths = QGroupBox("Data locations (read-only)")
         grid = QGridLayout(paths)
         self.path_edits = {}
-        for row, (key, label, is_dir) in enumerate([
+        for row, (key, label, is_dir) in enumerate(
+            [
                 ("picture_dir", "Picture folder", True),
                 ("result_dir", "Result folder", True),
                 ("recipe_dir", "Recipe folder", True),
                 ("eqp_cfg_path", "Eqp.cfg file", False),
-                ("model_dir", "Model folder (blank = app folder)", True)]):
+                ("model_dir", "Model folder (blank = app folder)", True),
+            ]
+        ):
             edit = QLineEdit(getattr(self.cfg, key))
             btn = QPushButton("Browse...")
             btn.clicked.connect(lambda _=False, k=key, d=is_dir: self._browse(k, d))
@@ -1971,8 +2226,14 @@ class MainWindow(QMainWindow):
         self.btn_calibrate = QPushButton("Run calibration")
         self.btn_calibrate.setProperty("primary", True)
         self.btn_calibrate.clicked.connect(self._run_calibration)
-        for w in (QLabel("Day"), self.cmb_cal_day, btn_cal_days,
-                  self.cmb_cal_recipe, self.btn_list_recipes, self.btn_calibrate):
+        for w in (
+            QLabel("Day"),
+            self.cmb_cal_day,
+            btn_cal_days,
+            self.cmb_cal_recipe,
+            self.btn_list_recipes,
+            self.btn_calibrate,
+        ):
             cl.addWidget(w)
         cl.addStretch(1)
         cal_rows.addLayout(cl)
@@ -1981,7 +2242,8 @@ class MainWindow(QMainWindow):
         self.chk_auto_cal = QCheckBox("Auto calibrate")
         self.chk_auto_cal.setToolTip(
             "Every interval, look at the newest production day and calibrate any\n"
-            "product/table that has pictures but no baseline yet.")
+            "product/table that has pictures but no baseline yet."
+        )
         self.chk_auto_cal.setChecked(self.cfg.auto_calibrate)
         self.chk_auto_cal.stateChanged.connect(lambda _: self._toggle_auto_calibrate())
         self.spin_cal_every = QSpinBox()
@@ -1995,11 +2257,19 @@ class MainWindow(QMainWindow):
             "Rebuild a baseline only when the machine has logged a bit-wear alarm\n"
             "since that baseline was measured. A baseline that keeps following\n"
             "production would turn a slow drift into the new normal, so it is\n"
-            "never rebuilt just because time has passed.")
+            "never rebuilt just because time has passed."
+        )
         self.lbl_auto_cal = QLabel("auto calibrate is off")
-        self.lbl_auto_cal.setStyleSheet(f"color:{theme.MUTED}; border:none; background:transparent;")
-        for w in (self.chk_auto_cal, QLabel("every"), self.spin_cal_every,
-                  self.chk_cal_refresh, self.lbl_auto_cal):
+        self.lbl_auto_cal.setStyleSheet(
+            f"color:{theme.MUTED}; border:none; background:transparent;"
+        )
+        for w in (
+            self.chk_auto_cal,
+            QLabel("every"),
+            self.spin_cal_every,
+            self.chk_cal_refresh,
+            self.lbl_auto_cal,
+        ):
             auto.addWidget(w)
         auto.addStretch(1)
         cal_rows.addLayout(auto)
@@ -2017,11 +2287,18 @@ class MainWindow(QMainWindow):
         self.spin_index_every.setValue(self.cfg.index_refresh_min)
         self.spin_index_every.setSuffix(" min")
         self.spin_index_every.valueChanged.connect(
-            lambda v: self.index_timer.setInterval(v * 60_000))
+            lambda v: self.index_timer.setInterval(v * 60_000)
+        )
         self.lbl_index = QLabel("index: building...")
         self.lbl_index.setStyleSheet(f"color:{theme.MUTED}; border:none; background:transparent;")
-        for b in (btn_save, btn_check, self.btn_index,
-                  QLabel("auto refresh every"), self.spin_index_every, self.lbl_index):
+        for b in (
+            btn_save,
+            btn_check,
+            self.btn_index,
+            QLabel("auto refresh every"),
+            self.spin_index_every,
+            self.lbl_index,
+        ):
             buttons.addWidget(b)
         buttons.addStretch(1)
         outer.addLayout(buttons)
@@ -2030,10 +2307,13 @@ class MainWindow(QMainWindow):
             "READ-ONLY on machine data. This tool never creates, changes or deletes "
             "anything in the picture, result, recipe or Eqp.cfg folders.\nIt writes "
             f"only into {APP_DIR} (config, baselines, labels), the model folder set "
-            "above, plus any CSV you export.")
+            "above, plus any CSV you export."
+        )
         notice.setWordWrap(True)
-        notice.setStyleSheet("color:#1b5e20; background:#e8f5e9; border:1px solid #a5d6a7;"
-                             "border-radius:4px; padding:6px;")
+        notice.setStyleSheet(
+            "color:#1b5e20; background:#e8f5e9; border:1px solid #a5d6a7;"
+            "border-radius:4px; padding:6px;"
+        )
         outer.addWidget(notice)
 
         self.txt_check = QTextEdit()
@@ -2044,17 +2324,23 @@ class MainWindow(QMainWindow):
 
     def _browse(self, key, is_dir):
         current = self.path_edits[key].text()
-        picked = (QFileDialog.getExistingDirectory(self, "Select folder", current) if is_dir
-                  else QFileDialog.getOpenFileName(self, "Select Eqp.cfg", current,
-                                                   "Config (*.cfg);;All (*.*)")[0])
+        picked = (
+            QFileDialog.getExistingDirectory(self, "Select folder", current)
+            if is_dir
+            else QFileDialog.getOpenFileName(
+                self, "Select Eqp.cfg", current, "Config (*.cfg);;All (*.*)"
+            )[0]
+        )
         if picked:
             self.path_edits[key].setText(picked)
 
     def _update_scale_label(self):
         v = self.spin_pixel.value()
         if v > 0:
-            self.lbl_scale.setText(f"1 px = {v:.6f} mm  ->  {1/v:.2f} px/mm   |   "
-                                   f"1440x1080 px = {1440*v:.2f} x {1080*v:.2f} mm")
+            self.lbl_scale.setText(
+                f"1 px = {v:.6f} mm  ->  {1 / v:.2f} px/mm   |   "
+                f"1440x1080 px = {1440 * v:.2f} x {1080 * v:.2f} mm"
+            )
 
     def _collect(self):
         for key, edit in self.path_edits.items():
@@ -2088,8 +2374,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Load PixelSize", str(exc))
             return
         self.spin_pixel.setValue(x)
-        self.status(f"PixelSize loaded: {x} mm/px"
-                    + ("" if abs(x - y) < 1e-9 else f"  (WARNING: Y differs: {y})"))
+        self.status(
+            f"PixelSize loaded: {x} mm/px"
+            + ("" if abs(x - y) < 1e-9 else f"  (WARNING: Y differs: {y})")
+        )
 
     def _check_data(self):
         cfg = self._collect()
@@ -2099,8 +2387,9 @@ class MainWindow(QMainWindow):
             lines.append(f"{key:<14} {'OK  ' if Path(value).exists() else 'MISS'}  {value}")
         try:
             days = available_days(cfg.result_dir)
-            lines.append(f"\nRun result days : {len(days)}"
-                         + (f"   {days[0]} .. {days[-1]}" if days else ""))
+            lines.append(
+                f"\nRun result days : {len(days)}" + (f"   {days[0]} .. {days[-1]}" if days else "")
+            )
         except OSError as exc:
             lines.append(f"\nRun result days : {exc}")
         flags = read_machine_flags(cfg.eqp_cfg_path)
@@ -2109,13 +2398,17 @@ class MainWindow(QMainWindow):
             for key, value in flags.items():
                 lines.append(f"{key:<36} = {value}")
             if flags.get("EnableAfterCuttingTakePicture") != "True":
-                lines.append("\nWARNING: EnableAfterCuttingTakePicture is not True - the machine\n"
-                             "         is NOT capturing new images, so the Dashboard tab will\n"
-                             "         stay empty until it is switched back on.")
+                lines.append(
+                    "\nWARNING: EnableAfterCuttingTakePicture is not True - the machine\n"
+                    "         is NOT capturing new images, so the Dashboard tab will\n"
+                    "         stay empty until it is switched back on."
+                )
             try:
                 if float(flags.get("AlignMaxOffset", "0")) > 0.3:
-                    lines.append(f"NOTE: AlignMaxOffset is {flags['AlignMaxOffset']} mm - loose "
-                                 "enough that a sustained drift can pass without alarming.")
+                    lines.append(
+                        f"NOTE: AlignMaxOffset is {flags['AlignMaxOffset']} mm - loose "
+                        "enough that a sustained drift can pass without alarming."
+                    )
             except ValueError:
                 pass
         self.txt_check.setPlainText("\n".join(lines))
@@ -2136,14 +2429,17 @@ class MainWindow(QMainWindow):
         for key, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
             with_pics = sum(1 for r in items if r.pictures)
             if not with_pics:
-                hidden += 1          # nothing to measure yet - show it once pictures land
+                hidden += 1  # nothing to measure yet - show it once pictures land
                 continue
-            self.cmb_cal_recipe.addItem(f"{key}  [{len(items)} panels, {with_pics} with pictures]",
-                                        key)
+            self.cmb_cal_recipe.addItem(
+                f"{key}  [{len(items)} panels, {with_pics} with pictures]", key
+            )
         note = f", {hidden} without pictures hidden" if hidden else ""
         if self.cmb_cal_recipe.count():
-            self.status(f"{day}: {len(runs)} panels, "
-                        f"{self.cmb_cal_recipe.count()} product/table combinations{note}.")
+            self.status(
+                f"{day}: {len(runs)} panels, "
+                f"{self.cmb_cal_recipe.count()} product/table combinations{note}."
+            )
         else:
             self.status(f"{day}: no product/table has pictures yet.", theme.ALERT_RED)
 
@@ -2163,8 +2459,7 @@ class MainWindow(QMainWindow):
     def _toggle_auto_calibrate(self, run_now: bool = True):
         if self.chk_auto_cal.isChecked():
             self.cal_timer.start(self.spin_cal_every.value() * 60_000)
-            self.lbl_auto_cal.setText(
-                f"on - checking every {self.spin_cal_every.value()} min")
+            self.lbl_auto_cal.setText(f"on - checking every {self.spin_cal_every.value()} min")
             if run_now:
                 self._auto_calibrate()
         else:
@@ -2181,7 +2476,7 @@ class MainWindow(QMainWindow):
     def _auto_calibrate(self):
         """Fill in baselines for whatever ran recently and has none yet."""
         if self.worker is not None and self.worker.isRunning():
-            return                       # a job is already using the worker slot
+            return  # a job is already using the worker slot
         cfg = self._collect()
         refresh = self.chk_cal_refresh.isChecked()
 
@@ -2231,7 +2526,8 @@ class MainWindow(QMainWindow):
         if not pending:
             self.lbl_auto_cal.setText(
                 f"on - {target_day}: nothing to calibrate "
-                f"({len(groups)} product/table already covered)")
+                f"({len(groups)} product/table already covered)"
+            )
             return
 
         names = ", ".join(k.split("|")[0] for k, _ in pending)
@@ -2282,8 +2578,7 @@ class MainWindow(QMainWindow):
         cfg = self._collect()
 
         try:
-            runs = [r for r in load_day(cfg.result_dir, day, self.picture_index)
-                    if r.key == key]
+            runs = [r for r in load_day(cfg.result_dir, day, self.picture_index) if r.key == key]
             days = [d for d in available_days(cfg.result_dir) if self.picture_index.get(d)]
         except OSError as exc:
             QMessageBox.warning(self, "Run calibration", str(exc))
@@ -2295,28 +2590,36 @@ class MainWindow(QMainWindow):
             else:
                 hint = "No day in the picture folder has images for these results."
             QMessageBox.information(
-                self, "Run calibration",
+                self,
+                "Run calibration",
                 f"{day} - {key}\n\n"
                 f"{len(runs)} panels, {sum(1 for r in runs if r.pictures)} with pictures, "
                 f"{len(ready)} passing with pictures.\n"
                 f"Calibration needs at least {MIN_CALIB_RUNS} passing panels that have "
-                f"pictures.\n\n{hint}")
-            self.status(f"{day} {key}: not enough panels with pictures to calibrate.",
-                        theme.ALERT_RED)
+                f"pictures.\n\n{hint}",
+            )
+            self.status(
+                f"{day} {key}: not enough panels with pictures to calibrate.", theme.ALERT_RED
+            )
             return
 
         self._busy(True)
 
         def job(worker):
-            return calibrate(cfg, runs,
-                             progress=lambda d, t: worker.progress.emit(d, t, "Calibrating"),
-                             cancelled=worker.is_cancelled)
+            return calibrate(
+                cfg,
+                runs,
+                progress=lambda d, t: worker.progress.emit(d, t, "Calibrating"),
+                cancelled=worker.is_cancelled,
+            )
 
         def finished(baseline):
             self.store.put(key, baseline)
             self._busy(False)
-            self.status(f"Calibrated {key}: {len(baseline.indices)} usable positions "
-                        f"of {baseline.pics_per_run}, from {baseline.runs_used} panels.")
+            self.status(
+                f"Calibrated {key}: {len(baseline.indices)} usable positions "
+                f"of {baseline.pics_per_run}, from {baseline.runs_used} panels."
+            )
 
         self._run_worker(job, finished)
 

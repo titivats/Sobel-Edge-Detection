@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
 IMAGE_EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg"}
 PICTURE_STAMP = "%Y%m%d_%H%M%S"
 RESULT_STAMP = "%Y%m%d_%H%M%S"
@@ -67,9 +66,7 @@ class AUO6000Dataset:
         # image weights a 30-point panel 2.5x more heavily than a 12-point panel
         # and can therefore select the wrong mode on a mixed production export.
         starts = [
-            image
-            for image in self.images
-            if image.cut_point == 1 and image.cut_point_total > 0
+            image for image in self.images if image.cut_point == 1 and image.cut_point_total > 0
         ]
         assigned = [image for image in starts if image.result_file]
         candidates = assigned or starts
@@ -90,9 +87,7 @@ class AUO6000Dataset:
         # different normal cut counts, one global value would be unsafe and
         # misleading; the caller must select an unambiguous product instead.
         product_modes = {
-            _unambiguous_mode(counts)
-            for product, counts in per_product.items()
-            if product
+            _unambiguous_mode(counts) for product, counts in per_product.items() if product
         }
         if len(product_modes) > 1 or 0 in product_modes:
             return 0
@@ -206,7 +201,8 @@ def _read_panels(result_dir: Path) -> list[AUO6000Panel]:
 
 
 def _picture_groups(
-    paths: list[Path], result_boundaries: list[datetime] | None = None,
+    paths: list[Path],
+    result_boundaries: list[datetime] | None = None,
 ) -> list[list[tuple[Path, datetime | None]]]:
     boundaries = sorted(result_boundaries or [])
     stamped = [(path, _timestamp_from_name(path, PICTURE_STAMP)) for path in paths]
@@ -283,11 +279,7 @@ def _assign_picture_groups(
     for item in stamped:
         path, captured_at = item
         matches = (
-            [
-                panel
-                for panel in exact_panels
-                if panel.start_at <= captured_at <= panel.end_at
-            ]
+            [panel for panel in exact_panels if panel.start_at <= captured_at <= panel.end_at]
             if captured_at is not None
             else []
         )
@@ -300,9 +292,7 @@ def _assign_picture_groups(
             else:
                 remaining.append(path)
 
-    assignments: list[
-        tuple[list[tuple[Path, datetime | None]], AUO6000Panel | None]
-    ] = []
+    assignments: list[tuple[list[tuple[Path, datetime | None]], AUO6000Panel | None]] = []
     assignments.extend(([item], None) for item in ambiguous_images)
     for panel in exact_panels:
         group = exact_matches[panel.result_file]
@@ -370,9 +360,7 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
         else []
     )
     log_files = (
-        [str(path.resolve()) for path in sorted(log_dir.glob("*.log"))]
-        if log_dir.is_dir()
-        else []
+        [str(path.resolve()) for path in sorted(log_dir.glob("*.log"))] if log_dir.is_dir() else []
     )
     warnings: list[str] = []
     disguised = sum(
@@ -397,9 +385,7 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
             "were left unassigned."
         )
     matched_results = {image.result_file for image in images if image.result_file}
-    unmatched_panels = sum(
-        1 for panel in panels if panel.result_file not in matched_results
-    )
+    unmatched_panels = sum(1 for panel in panels if panel.result_file not in matched_results)
     if unmatched_panels:
         warnings.append(f"{unmatched_panels} panel result(s) did not receive any images.")
     if assignments and len({len(group) for group, _panel in assignments}) > 1:

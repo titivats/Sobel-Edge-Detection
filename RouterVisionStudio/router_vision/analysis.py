@@ -40,7 +40,7 @@ class IndexBaseline:
     # the straight side means anything. Defaults keep older baseline files loadable.
     right_mean: float = 0.0
     right_sd: float = 0.0
-    rough_side: str = ""        # the side that was scalloped on these panels
+    rough_side: str = ""  # the side that was scalloped on these panels
 
     @property
     def straight_side(self) -> str:
@@ -120,6 +120,7 @@ class BaselineStore:
 # calibration
 # --------------------------------------------------------------------------
 
+
 def calibrate(
     cfg: AppConfig,
     runs: list[Run],
@@ -159,18 +160,18 @@ def calibrate(
     need = max(MIN_CALIB_RUNS, int(len(usable) * 0.6))
     indices: dict[str, IndexBaseline] = {}
     for k in sorted(widths):
-        w, l, rt = widths[k], lefts[k], rights[k]
-        if len(w) < need:
+        width_samples, left_samples, right_samples = widths[k], lefts[k], rights[k]
+        if len(width_samples) < need:
             continue
-        w_mean = statistics.fmean(w)
-        w_sd = statistics.pstdev(w) if len(w) > 1 else 0.0
+        w_mean = statistics.fmean(width_samples)
+        w_sd = statistics.pstdev(width_samples) if len(width_samples) > 1 else 0.0
 
         # A position whose pictures agree that one side is scalloped is judged on
         # its straight edge alone, so the usual width sanity check would throw
         # away a position that is perfectly measurable.
         side, hits = rough[k].most_common(1)[0]
-        index_rough = side if side and hits > len(w) / 2 else ""
-        edge = rt if index_rough == "left" else l
+        index_rough = side if side and hits > len(width_samples) / 2 else ""
+        edge = right_samples if index_rough == "left" else left_samples
         edge_sd = statistics.pstdev(edge) if len(edge) > 1 else 0.0
         if index_rough:
             if edge_sd > MAX_BASELINE_SD_PX:
@@ -180,12 +181,12 @@ def calibrate(
         indices[str(k)] = IndexBaseline(
             width_mean=round(w_mean, 2),
             width_sd=round(w_sd, 2),
-            left_mean=round(statistics.fmean(l), 2),
-            left_sd=round(statistics.pstdev(l) if len(l) > 1 else 0.0, 2),
-            right_mean=round(statistics.fmean(rt), 2),
-            right_sd=round(statistics.pstdev(rt) if len(rt) > 1 else 0.0, 2),
+            left_mean=round(statistics.fmean(left_samples), 2),
+            left_sd=round(statistics.pstdev(left_samples) if len(left_samples) > 1 else 0.0, 2),
+            right_mean=round(statistics.fmean(right_samples), 2),
+            right_sd=round(statistics.pstdev(right_samples) if len(right_samples) > 1 else 0.0, 2),
             rough_side=index_rough,
-            samples=len(w),
+            samples=len(width_samples),
         )
 
     if not indices:
@@ -222,7 +223,7 @@ class IndexResult:
     left_px: int = 0
     width_dev_mm: float = 0.0
     edge_dev_mm: float = 0.0
-    rough_side: str = ""        # side dropped as scalloped; width is not judged then
+    rough_side: str = ""  # side dropped as scalloped; width is not judged then
 
     @property
     def width_judged(self) -> bool:
@@ -322,10 +323,14 @@ def inspect(
 
                 res.details.append(
                     IndexResult(
-                        index=k, ok=True, path=run.pictures[k],
-                        width_px=m.width, left_px=edge_px,
+                        index=k,
+                        ok=True,
+                        path=run.pictures[k],
+                        width_px=m.width,
+                        left_px=edge_px,
                         width_dev_mm=0.0 if rough else round(dw_mm, 4),
-                        edge_dev_mm=round(de_mm, 4), rough_side=rough,
+                        edge_dev_mm=round(de_mm, 4),
+                        rough_side=rough,
                     )
                 )
 

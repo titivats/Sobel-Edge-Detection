@@ -40,8 +40,7 @@ class PositionLabels:
     def save(self) -> None:
         check_write_target(self.path, self.protected)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False),
-                             encoding="utf-8")
+        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def label(self, key: str, index: int) -> str:
         """Return the operator's name for this position, or a neutral fallback."""

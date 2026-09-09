@@ -8,13 +8,12 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-
 from router_vision.model import (
     BACKBONES,
+    PREPROCESS_VERSION,
     CropBox,
     CutClassifier,
     FeatureExtractor,
-    PREPROCESS_VERSION,
     SobelConfig,
 )
 

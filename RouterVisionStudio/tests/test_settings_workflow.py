@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tempfile
@@ -12,12 +13,11 @@ from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
+import production_app as ui
 import torch
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QFontDatabase
 from PySide6.QtWidgets import QApplication
-
-import production_app as ui
 from router_vision.config import AppConfig
 from router_vision.interlock import GateState
 from router_vision.model import CropBox, CutClassifier, SobelConfig, TrainReport
@@ -40,7 +40,8 @@ class SettingsWorkflowTests(unittest.TestCase):
         for folder in ("Picture", "Result", "Recipe"):
             (self.source / folder).mkdir(parents=True, exist_ok=True)
         for stamp in ("120010", "120015", "120210", "120215"):
-            picture = np.random.default_rng(8).integers(0, 256, (80, 100, 3), dtype=np.uint8)
+            # Include the default crop origin (400, 290) for real Sobel preparation.
+            picture = np.random.default_rng(8).integers(0, 256, (400, 500, 3), dtype=np.uint8)
             cv2.imwrite(str(self.source / "Picture" / f"20260903_{stamp}.bmp"), picture)
         header = "SN,Barcode,Recipe_Name,ProductId,Result,CuttingTime\n"
         for stamp, sn in (("120030", "1"), ("120230", "2")):
@@ -71,13 +72,14 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.window._sync_settings_controls()
 
     def model(self, *, sobel=None, quality=1.0):
-        classifier = CutClassifier(
-            crop=CropBox(0, 0, 100, 80), sobel=sobel, model_key="PRODUCT-A"
-        )
+        classifier = CutClassifier(crop=CropBox(0, 0, 100, 80), sobel=sobel, model_key="PRODUCT-A")
         classifier.classes = ["GOOD", "NG"]
         classifier.head = torch.nn.Linear(384, 2).eval()
         classifier.report = TrainReport(
-            classes=classifier.classes, n_train=8, n_val=2, val_acc=quality,
+            classes=classifier.classes,
+            n_train=8,
+            n_val=2,
+            val_acc=quality,
             per_class={"GOOD": {"n": 1, "correct": 1}, "NG": {"n": 1, "correct": 1}},
         )
         target = self.window._model_path("PRODUCT-A")
@@ -104,6 +106,158 @@ class SettingsWorkflowTests(unittest.TestCase):
         }
         self.window.sobel_records[self.window._sobel_record_key(path)] = record
         return record
+
+    def test_technician_label_prepares_selected_training_image_and_advances(self):
+        self.window.cmb_training_image.setCurrentIndex(1)
+        path = self.window._current_training_image_path()
+        source_before = Path(path).read_bytes()
+        self.assertNotEqual(path, self.window.settings_image_path)
+        parameters = self.window._sobel_parameter_record()
+        self.window._label_and_prepare_image("NG")
+        self.assertEqual(self.window._training_label_for(path), "NG")
+        self.assertTrue(self.window._record_is_saved(path, current_parameters=True))
+        self.assertNotEqual(self.window._current_training_image_path(), path)
+        record = self.window.sobel_records[self.window._sobel_record_key(path)]
+        self.assertEqual(record["sobel_parameters"], parameters)
+        self.assertEqual(Path(path).read_bytes(), source_before)
+        self.assertTrue(self.window.training_advanced.isHidden())
+
+    def test_technician_save_failure_does_not_label_or_advance(self):
+        path = self.window._current_training_image_path()
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning"),
+        ):
+            self.window._label_and_prepare_image("GOOD")
+        self.assertEqual(self.window._current_training_image_path(), path)
+        self.assertEqual(self.window._training_label_for(path), "")
+        self.assertFalse(self.window._record_is_saved(path))
+
+    def test_technician_label_failure_retains_saved_image_without_advancing(self):
+        path = self.window._current_training_image_path()
+        original_save = self.window._save_sobel_records
+        calls = []
+
+        def fail_second_save(records):
+            calls.append(records)
+            if len(calls) == 2:
+                raise OSError("label storage unavailable")
+            return original_save(records)
+
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=fail_second_save),
+            patch.object(ui.QMessageBox, "warning"),
+        ):
+            self.window._label_and_prepare_image("GOOD")
+        self.assertEqual(self.window._current_training_image_path(), path)
+        self.assertEqual(self.window._training_label_for(path), "")
+        self.assertTrue(self.window._record_is_saved(path, current_parameters=True))
+
+    def test_technician_skip_does_not_create_a_label(self):
+        path = self.window._current_training_image_path()
+        self.window._next_training_image_to_review()
+        self.assertNotEqual(self.window._current_training_image_path(), path)
+        self.assertEqual(self.window._training_label_for(path), "")
+        self.assertIn("PREPARE IN 2 SOBEL TUNING", self.window.lbl_training_next_step.text())
+
+    def test_manual_review_saves_label_without_changing_selected_image(self):
+        path = self.window._current_training_image_path()
+        self.window.chk_training_auto_next.setChecked(False)
+        self.window._label_and_prepare_image("GOOD")
+        self.assertEqual(self.window._current_training_image_path(), path)
+        self.assertEqual(self.window._training_label_for(path), "GOOD")
+        self.assertTrue(self.window._record_is_saved(path, current_parameters=True))
+        self.assertIn("SAVE LABEL", self.window.btn_label_good.text())
+        self.assertEqual(self.window.training_good_progress.value(), 1)
+
+    def test_training_guidance_moves_from_existing_model_to_completed_test(self):
+        self.model()
+        self.window._refresh_training_workflow_status()
+        self.assertIn("4a TEST MODEL", self.window.lbl_training_next_step.text())
+        self.window.trial_input_signature = self.window._trial_signature()
+        self.window._vision_trial_done(
+            [(path, "GOOD", 0.99) for path in self.window.settings_image_paths]
+        )
+        self.window._refresh_training_workflow_status()
+        self.assertIn("4b SAVE TESTED SETTINGS", self.window.lbl_training_next_step.text())
+
+    def test_training_actions_are_disabled_during_inspection(self):
+        self.window.auto_running = True
+        self.window._refresh_training_workflow_status()
+        for button in (
+            self.window.btn_label_good,
+            self.window.btn_label_ng,
+            self.window.btn_clear_label,
+            self.window.btn_back_to_sobel,
+            self.window.btn_train_model,
+        ):
+            self.assertFalse(button.isEnabled())
+
+    def test_sobel_labels_flow_to_training_without_selecting_a_folder(self):
+        first, second = self.window.settings_image_paths[:2]
+        self.window.cmb_training_image.setCurrentIndex(1)
+        self.assertEqual(self.window.settings_image_path, first)
+        with patch.object(ui.QFileDialog, "getExistingDirectory") as folder_picker:
+            self.window.btn_sobel_good.click()
+            self.window.cmb_settings_image.setCurrentIndex(1)
+            self.window.btn_sobel_ng.click()
+            self.window.btn_continue_training.click()
+        folder_picker.assert_not_called()
+        self.assertEqual(self.window.settings_workflow.currentIndex(), 2)
+        self.assertEqual(self.window._current_training_image_path(), second)
+        self.assertEqual(dict(self.window._training_items()), {first: "GOOD", second: "NG"})
+        self.assertEqual(self.window.training_good_progress.value(), 1)
+        self.assertEqual(self.window.training_ng_progress.value(), 1)
+        self.assertFalse(hasattr(self.window, "btn_training_source"))
+        self.window.sobel_records = self.window._load_sobel_records()
+        self.assertEqual(dict(self.window._training_items()), {first: "GOOD", second: "NG"})
+
+    def test_sobel_label_save_failure_never_adds_image_to_training(self):
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning"),
+        ):
+            self.window.btn_sobel_good.click()
+        self.assertEqual(self.window._training_items(), [])
+        self.assertIn("UNLABELED", self.window.lbl_sobel_label.text())
+
+    def test_sobel_label_and_save_status_follow_saving_edits_and_image_selection(self):
+        window = self.window
+        self.assertIn("NOT SAVED", window.lbl_sobel_label.text())
+        window.btn_sobel_good.click()
+        self.assertEqual(window.btn_sobel_good.text(), "SAVED AS GOOD")
+        self.assertIn("LABEL GOOD  |  SAVED", window.lbl_current_image_context.text())
+        window.btn_sobel_ng.click()
+        self.assertEqual(window.btn_sobel_good.text(), "SAVE AS GOOD")
+        self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
+        self.assertIn("LABEL NG  |  SAVED", window.lbl_current_image_context.text())
+        self.assertIn("LABEL NG", window.cmb_settings_image.currentText())
+        original = window.slider_gradient_x.value()
+        window.slider_gradient_x.setValue(original + 1)
+        self.assertIn("NOT SAVED", window.lbl_current_image_context.text())
+        self.assertIn("NOT SAVED", window.cmb_settings_image.currentText())
+        self.assertEqual(window.btn_sobel_ng.text(), "SAVE AS NG")
+        with (
+            patch.object(window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning"),
+        ):
+            window.btn_sobel_good.click()
+        self.assertIn("LABEL NG  |  NOT SAVED", window.lbl_current_image_context.text())
+        window.slider_gradient_x.setValue(original)
+        self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
+        window.cmb_settings_image.setCurrentIndex(1)
+        self.assertIn("UNLABELED", window.lbl_sobel_label.text())
+        self.assertEqual(window.btn_sobel_ng.text(), "SAVE AS NG")
+        window.cmb_settings_image.setCurrentIndex(0)
+        self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
+
+    def test_training_shortcut_does_not_bypass_settings_authentication(self):
+        self.window.show()
+        self.window.settings_panel.hide()
+        with patch.object(self.window, "_toggle_settings") as authenticate:
+            self.window._open_image_training()
+        authenticate.assert_called_once()
+        self.assertFalse(self.window.settings_panel.isVisible())
 
     def test_model_preprocessing_is_preserved_and_crop_belongs_to_settings(self):
         classifier = self.model(sobel=SobelConfig(blur_ksize=7))
@@ -177,6 +331,92 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertEqual(self.window._training_items(), [])
         self.assertTrue(self.window._settings_model_needs_retraining())
 
+    def test_compact_editors_preserve_precision_and_follow_loaded_values(self):
+        editors = dict(self.window.sobel_parameter_editors)
+        editors[self.window.slider_gradient_x].setValue(1.001)
+        editors[self.window.slider_gradient_y].setValue(1.002)
+        editors[self.window.slider_edge_gain].setValue(1.003)
+        self.assertEqual(self.window.slider_gradient_x.value(), 1001)
+        self.assertEqual(self.window.slider_gradient_y.value(), 1002)
+        self.assertEqual(self.window.slider_edge_gain.value(), 1003)
+        editors[self.window.slider_sobel_kernel].setCurrentIndex(3)
+        self.assertEqual(self.window._sobel_from_controls().sobel_ksize, 7)
+        self.window.slider_gradient_x.setValue(1234)
+        self.assertEqual(editors[self.window.slider_gradient_x].value(), 1.234)
+
+    def test_sobel_controls_use_one_column_and_actions_follow_requested_order(self):
+        window = self.window
+        window.settings_panel.show()
+        window.image_card.hide()
+        window.log_card.hide()
+        window.settings_workflow.setCurrentIndex(1)
+        window.show()
+        for width, height in ((960, 640), (1366, 768)):
+            window.resize(width, height)
+            for _ in range(8):
+                self.app.processEvents()
+            panel = window.sobel_parameter_panel
+            scroll = window.sobel_parameter_scroll
+            self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+            self.assertEqual(window.sobel_parameter_columns, 1)
+            tab = window.settings_workflow.widget(1)
+            self.assertTrue(tab.rect().contains(panel.mapTo(tab, panel.rect().bottomRight())))
+            for _, editor in window.sobel_parameter_editors:
+                scroll.ensureWidgetVisible(editor)
+                self.app.processEvents()
+                self.assertTrue(editor.isVisible())
+                self.assertTrue(
+                    panel.rect().contains(editor.mapTo(panel, editor.rect().bottomRight()))
+                )
+            positions = [
+                button.mapTo(tab, button.rect().topLeft()).x()
+                for button in (
+                    window.btn_previous_image,
+                    window.btn_sobel_good,
+                    window.btn_sobel_ng,
+                    window.btn_next_image,
+                )
+            ]
+            self.assertEqual(positions, sorted(positions))
+            footer = window.btn_continue_training.mapTo(
+                tab, window.btn_continue_training.rect().topLeft()
+            )
+            self.assertGreater(footer.y(), panel.mapTo(tab, panel.rect().bottomRight()).y())
+
+    def test_parameter_plus_minus_preserve_step_and_limits(self):
+        for slider, increase, decrease in self.window.sobel_parameter_step_buttons:
+            slider.setValue(slider.minimum())
+            decrease.click()
+            self.assertEqual(slider.value(), slider.minimum())
+            increase.click()
+            self.assertEqual(slider.value(), slider.minimum() + slider.singleStep())
+            slider.setValue(slider.maximum())
+            increase.click()
+            self.assertEqual(slider.value(), slider.maximum())
+            decrease.click()
+            self.assertEqual(slider.value(), slider.maximum() - slider.singleStep())
+
+    def test_vertical_mouse_wheel_adjusts_numeric_parameter(self):
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+
+        slider = self.window.slider_gradient_x
+        editor = dict(self.window.sobel_parameter_editors)[slider]
+        slider.setValue(1000)
+        for delta, expected in ((120, 1001), (-120, 1000)):
+            event = QWheelEvent(
+                QPointF(10, 10),
+                QPointF(10, 10),
+                QPoint(),
+                QPoint(0, delta),
+                Qt.NoButton,
+                Qt.NoModifier,
+                Qt.NoScrollPhase,
+                False,
+            )
+            self.app.sendEvent(editor, event)
+            self.assertEqual(slider.value(), expected)
+
     def test_sobel_save_reloads_exact_fine_parameters(self):
         self.model()
         self.window.slider_gradient_x.setValue(1001)
@@ -195,8 +435,10 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.model()
         path = self.window._current_training_image_path()
         previous = deepcopy(self.save_record(path))
-        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
-                patch.object(ui.QMessageBox, "warning") as warning:
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning") as warning,
+        ):
             self.window._set_training_label("NG")
         warning.assert_called_once()
         self.assertEqual(self.window.sobel_records[self.window._sobel_record_key(path)], previous)
@@ -211,8 +453,10 @@ class SettingsWorkflowTests(unittest.TestCase):
         original_output = Path(previous["sobel_output"])
         previous_bytes = original_output.read_bytes()
         self.window.slider_noise_floor.setValue(200)
-        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
-                patch.object(ui.QMessageBox, "warning") as warning:
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning") as warning,
+        ):
             self.window._save_current_sobel()
         warning.assert_called_once()
         self.assertEqual(self.window.sobel_records[key], previous)
@@ -221,12 +465,18 @@ class SettingsWorkflowTests(unittest.TestCase):
 
     def test_sobel_output_supports_unicode_directory(self):
         self.model()
-        with patch.object(ui, "SOBEL_OUTPUT_DIR", self.root / "\u0e20\u0e32\u0e1e Sobel"), \
-                patch.object(ui.QMessageBox, "warning") as warning:
+        with (
+            patch.object(ui, "SOBEL_OUTPUT_DIR", self.root / "\u0e20\u0e32\u0e1e Sobel"),
+            patch.object(ui.QMessageBox, "warning") as warning,
+        ):
             self.window._save_current_sobel()
         warning.assert_not_called()
-        record = self.window.sobel_records[self.window._sobel_record_key(self.window.settings_image_path)]
-        decoded = cv2.imdecode(np.fromfile(record["sobel_output"], dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        record = self.window.sobel_records[
+            self.window._sobel_record_key(self.window.settings_image_path)
+        ]
+        decoded = cv2.imdecode(
+            np.fromfile(record["sobel_output"], dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+        )
         self.assertIsNotNone(decoded)
 
     def test_modified_sobel_output_is_no_longer_saved(self):
@@ -240,8 +490,10 @@ class SettingsWorkflowTests(unittest.TestCase):
 
     def test_failed_first_sobel_save_does_not_leave_a_saved_record_or_output(self):
         self.model()
-        with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")), \
-                patch.object(ui.QMessageBox, "warning"):
+        with (
+            patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")),
+            patch.object(ui.QMessageBox, "warning"),
+        ):
             self.window._save_current_sobel()
         self.assertFalse(self.window._record_is_saved(self.window.settings_image_path))
         self.assertEqual(list(ui.SOBEL_OUTPUT_DIR.iterdir()), [])
@@ -290,12 +542,17 @@ class SettingsWorkflowTests(unittest.TestCase):
         paths = self.window.settings_image_paths
         self.window.trial_input_signature = self.window._trial_signature()
         results = [(path, "GOOD", 0.72) for path in paths]
-        with patch.object(ui, "render_prediction_overview", wraps=ui.render_prediction_overview) as renderer:
+        with patch.object(
+            ui, "render_prediction_overview", wraps=ui.render_prediction_overview
+        ) as renderer:
             self.window._vision_trial_done(results)
         self.assertEqual(len(renderer.call_args.args[1].details), 1)
         self.assertEqual(self.window.trial_result.details[0].label, "GOOD")
         self.assertIn("BELOW THRESHOLD", self.window.lbl_training_image_context.text())
-        self.assertLess(self.window.trial_preview_pixmap.width() * self.window.trial_preview_pixmap.height(), 1_000_000)
+        self.assertLess(
+            self.window.trial_preview_pixmap.width() * self.window.trial_preview_pixmap.height(),
+            1_000_000,
+        )
         self.window._next_training_image()
         self.assertIn(Path(paths[1]).name, self.window.lbl_training_image_context.text())
         self.window.spin_confidence.setValue(96)
@@ -316,7 +573,9 @@ class SettingsWorkflowTests(unittest.TestCase):
     def test_successful_save_connects_auo_source_and_product_model_to_operator_queue(self):
         self.model()
         self.window.trial_input_signature = self.window._trial_signature()
-        self.window._vision_trial_done([(p, "GOOD", .99) for p in self.window.settings_image_paths])
+        self.window._vision_trial_done(
+            [(p, "GOOD", 0.99) for p in self.window.settings_image_paths]
+        )
         self.assertTrue(self.window._apply_settings())
         self.assertEqual(self.window.cmb_recipe.currentText(), "PRODUCT-A")
         self.assertEqual([len(run.pictures) for run in self.window.queue], [2, 2])
@@ -345,7 +604,9 @@ class SettingsWorkflowTests(unittest.TestCase):
     def test_small_screen_keeps_vision_controls_accessible(self):
         self.model()
         self.window.trial_input_signature = self.window._trial_signature()
-        self.window._vision_trial_done([(p, "GOOD", .99) for p in self.window.settings_image_paths])
+        self.window._vision_trial_done(
+            [(p, "GOOD", 0.99) for p in self.window.settings_image_paths]
+        )
         self.window.settings_panel.show()
         self.window.image_card.hide()
         self.window.log_card.hide()

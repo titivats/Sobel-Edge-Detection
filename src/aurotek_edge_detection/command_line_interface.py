@@ -5,10 +5,10 @@ from pathlib import Path
 
 import cv2
 
+from .focus_zone import focus_zone_from_ratios
 from .image_file_discovery import find_images
 from .intrusion_measurement import measure_intrusion
 from .measurement_csv_writer import write_csv
-from .focus_zone import focus_zone_from_ratios
 
 
 def parse_args() -> argparse.Namespace:

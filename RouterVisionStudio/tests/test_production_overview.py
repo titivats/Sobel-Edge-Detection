@@ -7,13 +7,11 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
-
 from production_app import (
     APP_FULL_NAME,
     APP_NAME,
     MIN_TRAINING_IMAGES_PER_CLASS,
     RECENT_RESULT_LIMIT,
-    SETTINGS_PASSWORD,
     STATE_TEXT,
     model_file_name,
     render_prediction_overview,
@@ -57,27 +55,29 @@ class ProductionOverviewTests(unittest.TestCase):
             details = []
             for index in range(4):
                 path = Path(folder) / f"cut-{index}.bmp"
-                original = np.full((40, 80, 3), (30 + index * 20, 90, 140),
-                                   dtype=np.uint8)
+                original = np.full((40, 80, 3), (30 + index * 20, 90, 140), dtype=np.uint8)
                 self.assertTrue(cv2.imwrite(str(path), original))
                 label = "NG" if index == 2 else "GOOD"
                 confidence = 0.91 if label == "NG" else 0.99
                 details.append(ImageDecision(index, str(path), label, confidence))
 
             result = PanelDecision(
-                run=fake_run(), status="NG", note="cut point 3 is NG",
-                checked=4, details=details,
+                run=fake_run(),
+                status="NG",
+                note="cut point 3 is NG",
+                checked=4,
+                details=details,
             )
             classifier = OverviewClassifier()
             overview = render_prediction_overview(
-                classifier, result, 0.95, cell_width=260, cell_height=180)
+                classifier, result, 0.95, cell_width=260, cell_height=180
+            )
 
             # Four cells form a 2x2 tile-only overview with fixed gaps. The Qt
             # view does not add another title or panel-summary row above it.
             self.assertEqual(overview.shape, (390, 550, 3))
             self.assertGreater(int(overview.max()), 0)
-            self.assertEqual(classifier.extractor.paths,
-                             [detail.path for detail in details])
+            self.assertEqual(classifier.extractor.paths, [detail.path for detail in details])
             # Prediction text stays in the header and no longer obscures the
             # centre of the original-image evidence pane.
             self.assertEqual(tuple(overview[103, 74]), (30, 90, 140))
@@ -90,14 +90,12 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertGreater(int(overview.max()), 0)
 
     def test_production_ui_source_contains_no_thai_text(self):
-        source = (Path(__file__).parents[1] / "production_app.py").read_text(
-            encoding="utf-8")
+        source = (Path(__file__).parents[1] / "production_app.py").read_text(encoding="utf-8")
         thai = [character for character in source if "\u0e00" <= character <= "\u0e7f"]
         self.assertEqual(thai, [])
 
     def test_avtr_brand_and_recent_board_limit(self):
-        source = (Path(__file__).parents[1] / "production_app.py").read_text(
-            encoding="utf-8")
+        source = (Path(__file__).parents[1] / "production_app.py").read_text(encoding="utf-8")
         self.assertEqual(APP_NAME, "AVTR")
         self.assertEqual(APP_FULL_NAME, "Automatic Vision Tab Router")
         self.assertEqual(RECENT_RESULT_LIMIT, 5)
@@ -113,13 +111,9 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertNotIn("AVTR | ALL CUT POINTS", source)
         self.assertNotIn("cut points displayed", source)
         self.assertNotIn("image_layout.addWidget(self.lbl_detail)", source)
-        self.assertIn(
-            "self.table.cellClicked.connect(self._open_recent_result)", source
-        )
+        self.assertIn("self.table.cellClicked.connect(self._open_recent_result)", source)
         self.assertIn("class ResultImageDialog", source)
-        self.assertIn(
-            'os.environ.get("AVTR_SETTINGS_PASSWORD", "").strip()', source
-        )
+        self.assertIn('os.environ.get("AVTR_SETTINGS_PASSWORD", "").strip()', source)
         self.assertIn('QPushButton("SETTING ▾")', source)
         self.assertIn("QLineEdit.Password", source)
         self.assertIn("QLocale.setDefault", source)
@@ -161,12 +155,12 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn('QPushButton("▶")', source)
         self.assertIn("self.sobel_preview_timer.start()", source)
         self.assertNotIn('QPushButton("PREVIEW SOBEL")', source)
-        self.assertIn("3. IMAGE CLASSIFICATION BY VISION TRANSFORMER", source)
-        self.assertIn('QTabWidget()', source)
+        self.assertIn("TRAIN IMAGES · FROM SOBEL TUNING", source)
+        self.assertIn("QTabWidget()", source)
         self.assertIn("tabBar().setExpanding(True)", source)
         self.assertIn('"1  DATA SOURCE"', source)
         self.assertIn('"2  SOBEL TUNING"', source)
-        self.assertIn('"3  VISION TRANSFORMER"', source)
+        self.assertIn('"3  TRAIN IMAGES"', source)
         self.assertIn("SOURCE FOLDERS", source)
         self.assertIn("tbl_auo_folders", source)
         self.assertIn("CONTINUE TO SOBEL TUNING", source)
@@ -188,24 +182,25 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn('setObjectName("settingsCard")', source)
         self.assertIn('setObjectName("testAction")', source)
         self.assertIn('setObjectName("saveAction")', source)
-        self.assertIn("1. LABEL SOBEL IMAGES", source)
-        self.assertIn("2. TRAIN MODEL", source)
-        self.assertIn("3. TEST MODEL", source)
-        self.assertIn('QPushButton("LABEL GOOD")', source)
-        self.assertIn('QPushButton("LABEL NG")', source)
-        self.assertIn('QPushButton("TRAIN & SAVE MODEL")', source)
+        self.assertNotIn("REVIEW SAVED GOOD / NG EXAMPLES", source)
+        self.assertIn("3  TRAIN THE MODEL", source)
+        self.assertIn("4  TEST & SAVE SETTINGS", source)
+        self.assertIn('QPushButton("GOOD — SAVE & NEXT")', source)
+        self.assertIn('QPushButton("NG — SAVE & NEXT")', source)
+        self.assertIn('QPushButton("3  TRAIN & SAVE MODEL")', source)
         self.assertIn("MIN_TRAINING_IMAGES_PER_CLASS = 5", source)
         self.assertIn("class ModelTrainingWorker", source)
         self.assertIn("def _train_settings_model", source)
         self.assertIn("model_file_name(product)", source)
         self.assertIn(
-            "Testing uses the Sobel preprocessing saved in the model.", source
+            "Run the test, review predictions against the Original images, then save settings.",
+            source,
         )
         self.assertIn("self.settings_classifier", source)
         self.assertIn("def _load_settings_model", source)
         self.assertIn("No trained Sobel ViT model for ProductId", source)
         self.assertNotIn('QPushButton("OPEN LARGE VIEW")', source)
-        self.assertIn("IMAGE REVIEW / PREDICTION RESULTS", source)
+        self.assertNotIn("CHECK THE ORIGINAL IMAGE", source)
         self.assertIn("vision_workspace = QSplitter(Qt.Horizontal)", source)
         self.assertIn("def _layout_sobel_parameter_cards", source)
         self.assertIn("setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)", source)

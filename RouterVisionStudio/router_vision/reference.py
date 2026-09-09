@@ -4,6 +4,7 @@ Measurements use original image pixels, never the resized ViT input. No output
 from this module participates in the production gate. There is no automatic
 registration: the operator must align the reference on each image.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,13 +42,18 @@ def normal_scale(normal, x_mm_per_px: float, y_mm_per_px: float) -> float:
     if not all(math.isfinite(v) and v > 0 for v in (x_mm_per_px, y_mm_per_px)):
         raise ValueError("Both calibrated X/Y scales must be positive and finite.")
     normal = np.asarray(normal, dtype=float)
-    if normal.shape != (2,) or not np.isfinite(normal).all() or not np.isclose(np.linalg.norm(normal), 1):
+    if (
+        normal.shape != (2,)
+        or not np.isfinite(normal).all()
+        or not np.isclose(np.linalg.norm(normal), 1)
+    ):
         raise ValueError("A unit reference normal is required.")
     return 1.0 / math.hypot(normal[0] / x_mm_per_px, normal[1] / y_mm_per_px)
 
 
-def measure_reference(image: np.ndarray, line, *, side=1, radius=24,
-                      min_contrast=5.0, polarity=1) -> EdgeProfile:
+def measure_reference(
+    image: np.ndarray, line, *, side=1, radius=24, min_contrast=5.0, polarity=1
+) -> EdgeProfile:
     """Find positive material transitions along normals within a search band.
 
     Positive displacement is INTO the marked PCB side (material missing).
@@ -86,10 +92,18 @@ def measure_reference(image: np.ndarray, line, *, side=1, radius=24,
     anchors = ends[0] + np.linspace(0, 1, count)[:, None] * vector
     offsets = np.arange(-int(radius), int(radius) + 1, dtype=np.float32)
     coords = anchors[:, None, :] + offsets[None, :, None] * normal
-    inside = ((coords[:, :, 0] >= 1) & (coords[:, :, 0] <= w - 2)
-              & (coords[:, :, 1] >= 1) & (coords[:, :, 1] <= h - 2)).all(axis=1)
-    samples = cv2.remap(gray, coords[:, :, 0].astype(np.float32),
-                        coords[:, :, 1].astype(np.float32), cv2.INTER_LINEAR)
+    inside = (
+        (coords[:, :, 0] >= 1)
+        & (coords[:, :, 0] <= w - 2)
+        & (coords[:, :, 1] >= 1)
+        & (coords[:, :, 1] <= h - 2)
+    ).all(axis=1)
+    samples = cv2.remap(
+        gray,
+        coords[:, :, 0].astype(np.float32),
+        coords[:, :, 1].astype(np.float32),
+        cv2.INTER_LINEAR,
+    )
     gradient = np.gradient(samples, axis=1) * polarity
     peaks = gradient.argmax(axis=1)
     rows = np.arange(count)
@@ -104,8 +118,9 @@ def measure_reference(image: np.ndarray, line, *, side=1, radius=24,
     middle = np.clip(peaks, 1, len(offsets) - 2)
     a, b, c = (gradient[rows, middle - 1], gradient[rows, middle], gradient[rows, middle + 1])
     denominator = a - 2 * b + c
-    fractional = np.divide(0.5 * (a - c), denominator, out=np.zeros_like(b),
-                           where=np.abs(denominator) > 1e-6)
+    fractional = np.divide(
+        0.5 * (a - c), denominator, out=np.zeros_like(b), where=np.abs(denominator) > 1e-6
+    )
     deviations = offsets[peaks] + np.clip(fractional, -0.5, 0.5)
     out.normal, out.anchors = normal, anchors
     out.deviations, out.accepted = deviations, accepted
@@ -116,8 +131,11 @@ def measure_reference(image: np.ndarray, line, *, side=1, radius=24,
         out.protrusion_px = max(0.0, float(-deviations[accepted].min()))
     # No complete-measurement claim when any part of the reference is unseen.
     out.valid = bool(accepted.all())
-    out.reason = ("Measured along the selected segment only." if out.valid else
-                  "MEASUREMENT NOT VALID: weak, ambiguous or clipped edge; adjust the line / search band.")
+    out.reason = (
+        "Measured along the selected segment only."
+        if out.valid
+        else "MEASUREMENT NOT VALID: weak, ambiguous or clipped edge; adjust the line / search band."
+    )
     return out
 
 
@@ -128,6 +146,7 @@ def image_signature(path: str | Path) -> dict:
 
 class ReferenceStore:
     """Per-image prototypes only; no unsafe cross-board template reuse."""
+
     def __init__(self, path: Path, protected=()):
         self.path = path
         self.protected = list(protected)
@@ -140,7 +159,11 @@ class ReferenceStore:
         if not self.path.exists():
             return {}
         raw = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("images"), dict):
+        if (
+            not isinstance(raw, dict)
+            or raw.get("version") != 1
+            or not isinstance(raw.get("images"), dict)
+        ):
             raise ValueError("Reference file is invalid; it has not been overwritten.")
         return raw["images"]
 

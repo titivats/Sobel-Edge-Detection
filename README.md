@@ -12,7 +12,7 @@ weights are deliberately excluded from this public branch.
 ## AVTR Quick Start
 
 ```powershell
-git clone --branch new-version https://github.com/titivats/Sobel-Edge-Detection.git
+git clone --branch semi-final https://github.com/titivats/Sobel-Edge-Detection.git
 cd Sobel-Edge-Detection
 py -m venv venv
 .\venv\Scripts\python.exe -m pip install -r .\RouterVisionStudio\requirements.txt
@@ -23,6 +23,21 @@ $env:AVTR_SETTINGS_PASSWORD = "choose-your-own-password"
 
 See [`RouterVisionStudio/README.md`](RouterVisionStudio/README.md) for the AVTR
 workflow, safety constraints and Engineering Studio notes.
+
+## Semi-final workflow
+
+1. **DATA SOURCE:** select the Router export and review product/panel assignments.
+2. **SOBEL TUNING:** adjust the single-column controls by typing, mouse wheel, or
+   the vertical +/minus buttons. Use **SAVE AS GOOD** or **SAVE AS NG**, located
+   between Previous and Next. The image label and SAVED / NOT SAVED state update
+   together; changing preprocessing requires saving again.
+3. **TRAIN IMAGES:** images and labels carry over automatically. Train on at least
+   five eligible images of each class, test predictions, then save tested settings.
+   Use the bottom-right button to return to Sobel Tuning.
+
+The classifier still uses frozen DINOv2 ViT features and a supervised GOOD/NG
+linear head. GOOD-only anomaly detection is not implemented in this branch.
+See [OPERATIONS.md](RouterVisionStudio/OPERATIONS.md) for setup and validation.
 
 Open SETTING and select the AUO6000 export root after launch. The optional
 `config.example.json` is a manual configuration template; edit its paths before use.

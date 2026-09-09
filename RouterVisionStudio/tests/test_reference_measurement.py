@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
 import unittest
@@ -15,9 +16,13 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
-
 from router_vision.guard import ProtectedPathError
-from router_vision.reference import ReferenceStore, image_signature, measure_reference, normal_scale
+from router_vision.reference import (
+    ReferenceStore,
+    image_signature,
+    measure_reference,
+    normal_scale,
+)
 from router_vision.reference_ui import ReferenceMeasurementDialog
 
 
@@ -31,25 +36,25 @@ class ReferenceMeasureTests(unittest.TestCase):
     def test_straight_nominal_edge_is_zero(self):
         result = measure_reference(board_image(), [[30, 119.5], [285, 119.5]])
         self.assertTrue(result.valid, result.reason)
-        self.assertAlmostEqual(result.inward_px, 0, delta=.05)
-        self.assertAlmostEqual(result.protrusion_px, 0, delta=.05)
+        self.assertAlmostEqual(result.inward_px, 0, delta=0.05)
+        self.assertAlmostEqual(result.protrusion_px, 0, delta=0.05)
 
     def test_inward_and_protrusion_extrema_are_not_averaged_away(self):
         image = board_image()
         image[120:125, 100:150] = 0
         image[113:120, 190:240] = 180
         result = measure_reference(image, [[30, 119.5], [285, 119.5]])
-        self.assertAlmostEqual(result.inward_px, 5, delta=.1)
-        self.assertAlmostEqual(result.protrusion_px, 7, delta=.1)
-        self.assertGreater(result.coverage, .95)
+        self.assertAlmostEqual(result.inward_px, 5, delta=0.1)
+        self.assertAlmostEqual(result.protrusion_px, 7, delta=0.1)
+        self.assertGreater(result.coverage, 0.95)
 
     def test_reversing_line_and_side_preserves_material_sign(self):
         first = measure_reference(board_image(), [[30, 114.5], [285, 114.5]])
         reverse = measure_reference(board_image(), [[285, 114.5], [30, 114.5]], side=-1)
         self.assertTrue(first.valid)
         self.assertTrue(reverse.valid)
-        self.assertAlmostEqual(first.inward_px, 5, delta=.1)
-        self.assertAlmostEqual(first.inward_px, reverse.inward_px, delta=.01)
+        self.assertAlmostEqual(first.inward_px, 5, delta=0.1)
+        self.assertAlmostEqual(first.inward_px, reverse.inward_px, delta=0.01)
 
     def test_wrong_material_side_does_not_pass(self):
         result = measure_reference(board_image(), [[30, 119.5], [285, 119.5]], side=-1)
@@ -61,7 +66,9 @@ class ReferenceMeasureTests(unittest.TestCase):
         self.assertTrue(result.valid)
 
     def test_blank_clipped_and_ambiguous_edges_are_invalid(self):
-        self.assertFalse(measure_reference(np.zeros((240, 320, 3), np.uint8), [[30, 119.5], [285, 119.5]]).valid)
+        self.assertFalse(
+            measure_reference(np.zeros((240, 320, 3), np.uint8), [[30, 119.5], [285, 119.5]]).valid
+        )
         self.assertFalse(measure_reference(board_image(), [[30, 5], [285, 5]]).valid)
         self.assertFalse(measure_reference(board_image(), [[30, 97], [285, 97]], radius=24).valid)
         image = board_image()
@@ -75,18 +82,18 @@ class ReferenceMeasureTests(unittest.TestCase):
 
     def test_diagonal_edge_is_measured_along_its_normal(self):
         yy, xx = np.indices((240, 320))
-        image = np.where(yy >= .25 * xx + 70, 180, 0).astype(np.uint8)
+        image = np.where(yy >= 0.25 * xx + 70, 180, 0).astype(np.uint8)
         result = measure_reference(image, [[40, 79.5], [260, 134.5]])
         self.assertTrue(result.valid)
-        self.assertLess(max(result.inward_px, result.protrusion_px), .7)
+        self.assertLess(max(result.inward_px, result.protrusion_px), 0.7)
 
     def test_anisotropic_mm_conversion_is_perpendicular_to_physical_line(self):
-        self.assertAlmostEqual(normal_scale([0, 1], .01, .02), .02)
+        self.assertAlmostEqual(normal_scale([0, 1], 0.01, 0.02), 0.02)
         n = [1 / math.sqrt(2), 1 / math.sqrt(2)]
-        self.assertAlmostEqual(normal_scale(n, .01, .02), 1 / math.sqrt(5000 + 1250))
+        self.assertAlmostEqual(normal_scale(n, 0.01, 0.02), 1 / math.sqrt(5000 + 1250))
         for scale in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
-                normal_scale([0, 1], scale, .02)
+                normal_scale([0, 1], scale, 0.02)
 
 
 class ReferenceStoreTests(unittest.TestCase):
@@ -168,13 +175,13 @@ class ReferenceUITests(unittest.TestCase):
         self.dialog.aligned.setChecked(True)
         self.assertIn("WITHIN TRIAL LIMITS", self.dialog.result.text())
         self.assertEqual(self.dialog.inward.suffix(), " px")
-        self.dialog.scale_x.setValue(.01)
-        self.dialog.scale_y.setValue(.02)
+        self.dialog.scale_x.setValue(0.01)
+        self.dialog.scale_y.setValue(0.02)
         self.assertFalse(self.dialog.calibrated.isChecked())
         self.dialog.calibrated.setChecked(True)
         self.assertEqual(self.dialog.inward.suffix(), " mm")
-        self.assertAlmostEqual(self.dialog.inward.value(), .04)
-        self.dialog.scale_x.setValue(.02)
+        self.assertAlmostEqual(self.dialog.inward.value(), 0.04)
+        self.dialog.scale_x.setValue(0.02)
         self.assertFalse(self.dialog.calibrated.isChecked())
         self.assertEqual(self.dialog.inward.suffix(), " px")
 
@@ -225,7 +232,12 @@ class ReferenceUITests(unittest.TestCase):
         self.assertTrue(self.dialog.result.isVisible())
         self.assertTrue(self.dialog.save_button.isVisible())
         self.assertGreaterEqual(self.dialog.result.height(), 90)
-        self.assertLessEqual(self.dialog.save_button.mapTo(self.dialog, QPoint(0, self.dialog.save_button.height())).y(), self.dialog.height())
+        self.assertLessEqual(
+            self.dialog.save_button.mapTo(
+                self.dialog, QPoint(0, self.dialog.save_button.height())
+            ).y(),
+            self.dialog.height(),
+        )
 
 
 if __name__ == "__main__":

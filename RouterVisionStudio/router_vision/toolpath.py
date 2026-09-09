@@ -32,6 +32,7 @@ POINT_RECORD = 13
 @dataclass
 class Segment:
     """One closed or open polyline from the recipe."""
+
     offset: int
     points: list[tuple[float, float]]
 
@@ -84,8 +85,10 @@ class Toolpath:
 
     def summary(self) -> str:
         w, h = self.span_mm
-        return (f"{len(self.segments)} segments, {len(self.slots)} slots, "
-                f"{self.point_count} points, span {w:.2f} x {h:.2f} mm")
+        return (
+            f"{len(self.segments)} segments, {len(self.slots)} slots, "
+            f"{self.point_count} points, span {w:.2f} x {h:.2f} mm"
+        )
 
 
 def _read_chain(buf: bytes, start: int, end: int) -> tuple[list[tuple[float, float]], int]:
@@ -150,8 +153,9 @@ def _quartiles(values: list[float]) -> tuple[float, float]:
     return ordered[max(0, n // 4)], ordered[min(n - 1, (3 * n) // 4)]
 
 
-def fit_bounds(segments: list[Segment],
-               fence: float = 3.0) -> tuple[tuple[float, float, float, float], list[int]]:
+def fit_bounds(
+    segments: list[Segment], fence: float = 3.0
+) -> tuple[tuple[float, float, float, float], list[int]]:
     """Bounds of the main body of the geometry, plus the outlying segments.
 
     The recipe is read by scanning bytes for point records, so a stray run of
@@ -167,8 +171,12 @@ def fit_bounds(segments: list[Segment],
 
     def union(chosen: list[int]) -> tuple[float, float, float, float]:
         boxes = [segments[i].bounds for i in chosen]
-        return (min(b[0] for b in boxes), min(b[1] for b in boxes),
-                max(b[2] for b in boxes), max(b[3] for b in boxes))
+        return (
+            min(b[0] for b in boxes),
+            min(b[1] for b in boxes),
+            max(b[2] for b in boxes),
+            max(b[3] for b in boxes),
+        )
 
     everything = list(range(len(segments)))
     if len(segments) < 4:
@@ -181,7 +189,7 @@ def fit_bounds(segments: list[Segment],
         q1, q3 = _quartiles(values)
         iqr = q3 - q1
         if iqr <= 0:
-            continue          # every centre sits on one line: nothing to judge
+            continue  # every centre sits on one line: nothing to judge
         lo, hi = q1 - fence * iqr, q3 + fence * iqr
         keep = [i for i in keep if lo <= centres[i][axis] <= hi]
 

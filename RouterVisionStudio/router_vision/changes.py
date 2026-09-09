@@ -40,7 +40,7 @@ CFG_NAME = re.compile(r"^TempEqp(\d{8})T(\d{6})", re.IGNORECASE)
 @dataclass
 class MachineEvent:
     when: datetime
-    kind: str          # "bit" or "camera"
+    kind: str  # "bit" or "camera"
     detail: str
 
     def __str__(self) -> str:
@@ -54,8 +54,9 @@ def _stamp(date_part: str, time_part: str) -> datetime | None:
         return None
 
 
-def find_bit_events(result_dir: str | Path, since: datetime | None = None,
-                    limit: int = 200) -> list[MachineEvent]:
+def find_bit_events(
+    result_dir: str | Path, since: datetime | None = None, limit: int = 200
+) -> list[MachineEvent]:
     """Bit-wear alarms, newest first.
 
     Only files stamped after `since` are opened, so this stays cheap even with
@@ -99,14 +100,14 @@ def find_bit_events(result_dir: str | Path, since: datetime | None = None,
     return events
 
 
-def last_bit_change(result_dir: str | Path,
-                    since: datetime | None = None) -> datetime | None:
+def last_bit_change(result_dir: str | Path, since: datetime | None = None) -> datetime | None:
     events = find_bit_events(result_dir, since=since, limit=1)
     return events[0].when if events else None
 
 
-def find_camera_events(temp_dir: str | Path, since: datetime | None = None,
-                       limit: int = 50) -> list[MachineEvent]:
+def find_camera_events(
+    temp_dir: str | Path, since: datetime | None = None, limit: int = 50
+) -> list[MachineEvent]:
     """Snapshots where the camera calibration differs from the one before it."""
     snapshots: list[tuple[datetime, str]] = []
     try:

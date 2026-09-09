@@ -25,13 +25,13 @@ DEFAULT_CLASSES = ["GOOD", "NG"]
 
 @dataclass
 class Label:
-    image: str            # file name, e.g. 20260622_000003.bmp
+    image: str  # file name, e.g. 20260622_000003.bmp
     cls: str
-    path: str = ""        # full path when it was labelled, for convenience
-    product: str = ""     # ProductId of the panel: models are trained per product
+    path: str = ""  # full path when it was labelled, for convenience
+    product: str = ""  # ProductId of the panel: models are trained per product
     recipe: str = ""
     table: str = ""
-    position: int = -1    # picture index within its run
+    position: int = -1  # picture index within its run
     sn: str = ""
     note: str = ""
     labelled_at: str = ""
@@ -73,17 +73,21 @@ class LabelStore:
             "classes": self.classes,
             "labels": {k: asdict(v) for k, v in self.labels.items()},
         }
-        self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
-                             encoding="utf-8")
+        self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # -- editing -----------------------------------------------------------
     def set(self, image_path: str | Path, cls: str, **meta) -> Label:
         p = Path(image_path)
         label = Label(
-            image=p.name, cls=cls, path=str(p),
+            image=p.name,
+            cls=cls,
+            path=str(p),
             labelled_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **{k: v for k, v in meta.items() if k in
-               ("product", "recipe", "table", "position", "sn", "note")},
+            **{
+                k: v
+                for k, v in meta.items()
+                if k in ("product", "recipe", "table", "position", "sn", "note")
+            },
         )
         self.labels[p.name] = label
         return label
@@ -106,18 +110,19 @@ class LabelStore:
 
     def keys(self) -> list[str]:
         """Every ProductId|table that has at least one label."""
-        return sorted({self.key_of(l) for l in self.labels.values() if l.product})
+        return sorted({self.key_of(label) for label in self.labels.values() if label.product})
 
     def _for_key(self, key: str | None) -> list[Label]:
         if not key:
             return list(self.labels.values())
-        return [l for l in self.labels.values() if self.key_of(l) == key]
+        return [label for label in self.labels.values() if self.key_of(label) == key]
 
     def counts(self, key: str | None = None) -> dict[str, int]:
-        return dict(Counter(l.cls for l in self._for_key(key)))
+        return dict(Counter(label.cls for label in self._for_key(key)))
 
-    def usable_for_training(self, min_per_class: int = 5,
-                            key: str | None = None) -> tuple[bool, str]:
+    def usable_for_training(
+        self, min_per_class: int = 5, key: str | None = None
+    ) -> tuple[bool, str]:
         counts = self.counts(key)
         missing = [c for c in DEFAULT_CLASSES if counts.get(c, 0) == 0]
         if missing:

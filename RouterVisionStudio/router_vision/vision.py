@@ -18,11 +18,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-
 # A side is only called rough when it wanders much more than the other one, so
 # an ordinary straight slot with a speck of debris is never split up.
-ROUGH_MIN_SPREAD_PX = 8.0     # below this the side counts as straight, full stop
-ROUGH_RATIO = 4.0             # and it has to wander this many times the other side
+ROUGH_MIN_SPREAD_PX = 8.0  # below this the side counts as straight, full stop
+ROUGH_RATIO = 4.0  # and it has to wander this many times the other side
 
 
 def _spread(values: np.ndarray) -> float:
@@ -41,16 +40,16 @@ def _spread(values: np.ndarray) -> float:
 @dataclass
 class CutMeasurement:
     valid: bool = False
-    attempted: int = 0          # scan lines tried
-    rows: int = 0               # scan lines that found both edges
-    slot_left: int = 0          # median near edge, px (left for vertical, top for horizontal)
-    slot_right: int = 0         # median far edge, px  (right / bottom)
-    width: int = 0              # slot_right - slot_left, px - the gap across the slot
-    width_sd: float = 0.0       # spread of per-line width, px
-    orientation: str = "vertical"   # which way the channel runs
-    left_spread: float = 0.0    # 5-95 percentile range of the near edge, px
-    right_spread: float = 0.0   # same for the far edge
-    rough_side: str = ""        # "left" / "right" when one side is not a straight edge
+    attempted: int = 0  # scan lines tried
+    rows: int = 0  # scan lines that found both edges
+    slot_left: int = 0  # median near edge, px (left for vertical, top for horizontal)
+    slot_right: int = 0  # median far edge, px  (right / bottom)
+    width: int = 0  # slot_right - slot_left, px - the gap across the slot
+    width_sd: float = 0.0  # spread of per-line width, px
+    orientation: str = "vertical"  # which way the channel runs
+    left_spread: float = 0.0  # 5-95 percentile range of the near edge, px
+    right_spread: float = 0.0  # same for the far edge
+    rough_side: str = ""  # "left" / "right" when one side is not a straight edge
     row_y: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
     row_l: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
     row_r: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
@@ -98,7 +97,7 @@ def measure_image(
     path: str | Path,
     *,
     y0: int = 0,
-    y1: int = 4000,      # clamped to the picture height: "down to the bottom"
+    y1: int = 4000,  # clamped to the picture height: "down to the bottom"
     step: int = 1,
     green_delta: int = 5,
     green_min: int = 25,
@@ -138,7 +137,7 @@ def measure_image(
         # mirror image: each column is scanned up/down, so transpose and reuse
         cx0, cx1 = 0, width
         xs = np.arange(cx0, cx1, step)
-        band = mask_full[:, cx0:cx1:step].T          # (n_columns, height)
+        band = mask_full[:, cx0:cx1:step].T  # (n_columns, height)
         xs = xs[: band.shape[0]]
         candidates.append(("horizontal",) + _scan(band, xs))
 
@@ -158,8 +157,7 @@ def measure_image(
     else:
         attempted = len(np.arange(0, width, step))
 
-    out = CutMeasurement(attempted=int(attempted), rows=int(len(coords)),
-                         orientation=name)
+    out = CutMeasurement(attempted=int(attempted), rows=int(len(coords)), orientation=name)
     out.row_y = coords
     out.row_l = near
     out.row_r = far
@@ -186,7 +184,7 @@ def measure_image(
     return out
 
 
-OVERLAY_DOTS = 90          # how many scan rows get a yellow dot drawn
+OVERLAY_DOTS = 90  # how many scan rows get a yellow dot drawn
 
 
 def render_overlay(path: str | Path, meas: CutMeasurement) -> np.ndarray:
@@ -221,8 +219,7 @@ def draw_overlay(img: np.ndarray, meas: CutMeasurement, scale: float = 1.0) -> n
 
     if meas.valid:
         # measured edges - cyan, drawn across the slot
-        edges = (([meas.slot_left] if draw_near else [])
-                 + ([meas.slot_right] if draw_far else []))
+        edges = ([meas.slot_left] if draw_near else []) + ([meas.slot_right] if draw_far else [])
         for edge in edges:
             e = at(edge)
             if horizontal:
@@ -234,8 +231,9 @@ def draw_overlay(img: np.ndarray, meas: CutMeasurement, scale: float = 1.0) -> n
         # solid bar and stop showing whether the edge is steady. The measurement
         # itself always uses every row.
         stride = max(1, len(meas.row_y) // dots)
-        for coord, near, far in zip(meas.row_y[::stride], meas.row_l[::stride],
-                                    meas.row_r[::stride]):
+        for coord, near, far in zip(
+            meas.row_y[::stride], meas.row_l[::stride], meas.row_r[::stride]
+        ):
             hits = ([near] if draw_near else []) + ([far] if draw_far else [])
             for edge in hits:
                 point = (at(coord), at(edge)) if horizontal else (at(edge), at(coord))

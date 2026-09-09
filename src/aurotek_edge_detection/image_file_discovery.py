@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 SUPPORTED_EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 

@@ -11,7 +11,6 @@ from router_vision.auo6000 import (
     scan_auo6000_dataset,
 )
 
-
 CSV_HEADER = (
     "SN,Barcode,Recipe_Name,ProductId,BitDiameter,CuttingSpeed,"
     "OffsetY,OffsetX,Result,BitShiftCount,CuttingTime\n"
@@ -51,16 +50,14 @@ class AUO6000DatasetTests(unittest.TestCase):
                 (picture / name).write_bytes(png_signature)
 
             (result / "_20260903_111247.csv").write_text(
-                CSV_HEADER
-                + "53391,,199944000-Optoput-Test.rcp,199944000-Optoput-Test,"
+                CSV_HEADER + "53391,,199944000-Optoput-Test.rcp,199944000-Optoput-Test,"
                 "1.3,4,0.03,-0.08,True,0,89\n"
                 + ",,199944000-Optoput-Test.rcp,199944000-Optoput-Test,"
                 "1.3,4,0,0,True,0,-1\n",
                 encoding="utf-8",
             )
             (result / "_20260903_111515.csv").write_text(
-                CSV_HEADER
-                + "53392,,199944000-Optoput-Test.rcp,199944000-Optoput-Test,"
+                CSV_HEADER + "53392,,199944000-Optoput-Test.rcp,199944000-Optoput-Test,"
                 "1.3,4,-0.08,0.001,True,0,89\n",
                 encoding="utf-8",
             )
@@ -109,8 +106,10 @@ class AUO6000DatasetTests(unittest.TestCase):
             dataset = scan_auo6000_dataset(root)
 
             self.assertEqual(
-                [(image.panel_sn, image.cut_point, image.cut_point_total)
-                 for image in dataset.images],
+                [
+                    (image.panel_sn, image.cut_point, image.cut_point_total)
+                    for image in dataset.images
+                ],
                 [("A1", 1, 2), ("A1", 2, 2), ("A2", 1, 2), ("A2", 2, 2)],
             )
             self.assertEqual(dataset.panels[0].start_at.strftime("%H:%M:%S"), "10:00:00")
@@ -123,18 +122,19 @@ class AUO6000DatasetTests(unittest.TestCase):
             picture, result, _recipe, _log = self._folders(root)
             self._image(picture / "20260903_100000.bmp")
             (result / "_20260903_100500.csv").write_text(
-                CSV_HEADER
-                + "P1,,PRODUCT-A.rcp,PRODUCT-A,1.3,4,0,0,True,0,10\n",
+                CSV_HEADER + "P1,,PRODUCT-A.rcp,PRODUCT-A,1.3,4,0,0,True,0,10\n",
                 encoding="utf-8",
             )
 
             dataset = scan_auo6000_dataset(root)
 
             self.assertEqual(dataset.images[0].panel_sn, "")
-            self.assertTrue(any("1 image(s) could not be linked" in item
-                                for item in dataset.warnings))
-            self.assertTrue(any("1 panel result(s) did not receive" in item
-                                for item in dataset.warnings))
+            self.assertTrue(
+                any("1 image(s) could not be linked" in item for item in dataset.warnings)
+            )
+            self.assertTrue(
+                any("1 panel result(s) did not receive" in item for item in dataset.warnings)
+            )
 
     def test_modern_result_boundary_splits_back_to_back_panels(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -163,7 +163,9 @@ class AUO6000DatasetTests(unittest.TestCase):
                         cut_point_total=total,
                     )
                 )
-        self.assertEqual(AUO6000Dataset(root="", picture_dir="", images=images).expected_cut_points, 2)
+        self.assertEqual(
+            AUO6000Dataset(root="", picture_dir="", images=images).expected_cut_points, 2
+        )
 
     def test_expected_cut_points_is_ambiguous_across_products(self):
         panels = [
