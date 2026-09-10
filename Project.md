@@ -1,4 +1,16 @@
-# Sobel & Vision Transformer — semi-final
+# Sobel & Vision Transformer — final_dev
+
+## Beginner development cleanup (2026-09-10)
+
+Start with [README.md](README.md) and [Where to edit](docs/PROJECT_STRUCTURE.md).
+The former general-purpose Sobel experiment, unused recipe-planning templates,
+and empty test placeholder have been removed. The active measurement CLI and
+engineering workspace remain available as related optional tools.
+
+The Sobel panel now uses one ordered parameter definition list, preserving its
+behavior with less repeated construction code. Install `requirements-dev.txt`
+and use `scripts/test.bat` to run the 119 application tests. The batch runner
+does not require changing PowerShell's execution policy.
 
 AVTR is a Windows desktop project for reviewing Router images, preparing Sobel
 inputs, and classifying PCB cuts as GOOD or NG using DINOv2 Vision Transformer
@@ -32,7 +44,7 @@ for training; an unsuccessful write does not publish a new label.
 
 ## Verification
 
-The semi-final application passed 119 unittest cases on Windows with Qt offscreen.
+The application passed 119 unittest cases on Windows with Qt offscreen.
 Ruff lint/format checks and Python compilation passed for the repository code.
 
 ```powershell

@@ -1234,98 +1234,62 @@ class MainWindow(QMainWindow):
         sobel_parameters.setContentsMargins(0, 2, 0, 2)
         sobel_parameters.setHorizontalSpacing(6)
         sobel_parameters.setVerticalSpacing(4)
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+        # One ordered list defines the controls, help text and processing sequence.
+        parameter_specs = (
+            (
                 "Blur size",
                 self.slider_sobel_blur,
                 self.lbl_sobel_blur_value,
                 "Smooth small noise before detecting edges.",
             ),
-            0,
-            0,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
                 "Blur strength",
                 self.slider_blur_sigma,
                 self.lbl_blur_sigma_value,
-                "Gaussian sigma; AUTO lets OpenCV choose from the blur size.",
+                "Gaussian sigma; AUTO chooses strength from the blur size.",
             ),
-            0,
-            1,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
                 "Sobel kernel",
                 self.slider_sobel_kernel,
                 self.lbl_sobel_kernel_value,
-                "Edge detector size: larger values produce broader edge response.",
+                "Edge detector size: larger values produce a broader edge response.",
             ),
-            1,
-            0,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
-                "Edge normalization",
-                self.slider_sobel_clip,
-                self.lbl_sobel_clip_value,
-                "Percentile used to normalize strong edges to white.",
-            ),
-            1,
-            1,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
                 "X edge weight",
                 self.slider_gradient_x,
                 self.lbl_gradient_x_value,
                 "Weight for left/right intensity changes.",
             ),
-            2,
-            0,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
                 "Y edge weight",
                 self.slider_gradient_y,
                 self.lbl_gradient_y_value,
                 "Weight for top/bottom intensity changes.",
             ),
-            2,
-            1,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
+                "Edge normalization",
+                self.slider_sobel_clip,
+                self.lbl_sobel_clip_value,
+                "Percentile used to normalize strong edges to white.",
+            ),
+            (
                 "Edge brightness",
                 self.slider_edge_gain,
                 self.lbl_edge_gain_value,
                 "Brightness gain applied after edge normalization.",
             ),
-            3,
-            0,
-        )
-        sobel_parameters.addWidget(
-            self._make_parameter_control(
+            (
                 "Noise removal",
                 self.slider_noise_floor,
                 self.lbl_noise_floor_value,
                 "Remove weak edge pixels below this intensity.",
             ),
-            3,
-            1,
         )
         self.sobel_parameters_layout = sobel_parameters
-        self.sobel_parameter_cards = [
-            sobel_parameters.itemAtPosition(row, column).widget()
-            for row in range(4)
-            for column in range(2)
-        ]
-        # Follow processing order: smoothing, edges, normalization, output cleanup.
-        cards = self.sobel_parameter_cards
-        self.sobel_parameter_cards = [cards[index] for index in (0, 1, 2, 4, 5, 3, 6, 7)]
-        for card in cards:
-            sobel_parameters.removeWidget(card)
-        for row, card in enumerate(self.sobel_parameter_cards):
+        self.sobel_parameter_cards = []
+        for row, (title, slider, value_label, help_text) in enumerate(parameter_specs):
+            card = self._make_parameter_control(title, slider, value_label, help_text)
+            self.sobel_parameter_cards.append(card)
             sobel_parameters.addWidget(card, row, 0)
         self.sobel_parameter_columns = 1
         self.sobel_parameter_scroll = QScrollArea()
@@ -1448,7 +1412,8 @@ class MainWindow(QMainWindow):
         self.lbl_training_next_step.setStyleSheet(
             "background:#dbeafe; color:#1e40af; padding:9px; font-weight:800;"
         )
-        decision_layout.addWidget(self.lbl_training_next_step)
+        self.lbl_training_next_step.setParent(decision_card)
+        self.lbl_training_next_step.hide()
         self.btn_back_to_sobel = QPushButton("BACK TO 2 SOBEL TUNING")
         self.btn_back_to_sobel.setObjectName("outline")
         self.btn_back_to_sobel.clicked.connect(lambda: self.settings_workflow.setCurrentIndex(1))
@@ -1579,6 +1544,7 @@ class MainWindow(QMainWindow):
         self.btn_training_guide.setCheckable(True)
         self.btn_training_guide.toggled.connect(self.training_guide.setVisible)
         workflow_layout.addWidget(self.btn_training_guide)
+        self.btn_training_guide.hide()
         workflow_layout.addWidget(self.training_guide)
         self.training_guide.hide()
         reference_card = QFrame()
@@ -1605,6 +1571,7 @@ class MainWindow(QMainWindow):
         self.btn_training_advanced.setObjectName("outline")
         self.btn_training_advanced.toggled.connect(self.training_advanced.setVisible)
         workflow_layout.addWidget(self.btn_training_advanced)
+        self.btn_training_advanced.hide()
         workflow_layout.addWidget(self.training_advanced)
         self.training_advanced.hide()
         workflow_layout.addStretch(1)

@@ -38,8 +38,8 @@ train examples without using the Recipe reference editor or camera mapping.
    and the selected image's label. Labels and saved images carry over to page 3
    automatically; no second folder selection is needed. The label actions remain
    in page 2, and page 3 provides image navigation, training and testing.
-3. Follow the next-step banner; it shows how many more saved GOOD/NG examples
-   are needed to start training. Press **TRAIN & SAVE MODEL**, then test.
+3. Review the GOOD/NG counts and model training status in the training card.
+   Press **TRAIN & SAVE MODEL** when enough eligible examples are available.
 4. Run **4a TEST MODEL**, review predictions, then use **4b SAVE TESTED SETTINGS**.
    The bottom-right buttons navigate between Sobel Tuning and Train Images.
 
@@ -55,8 +55,9 @@ Labeling does not silently retune preprocessing: current Sobel settings are used
 for the preview and save. If edges need adjustment, use the Sobel tab and review
 examples under the new settings. An image or label save failure keeps the
 selection in place. If only the label write fails, the saved Sobel image remains
-available for retry. Recipe measurement and confidence controls are under
-**ADVANCED SETTINGS / EDGE MEASUREMENT**; they are not extra training steps.
+available for retry. The next-step banner, quick-guide button, and advanced
+settings/edge-measurement button are hidden in the final development UI.
+The hidden confidence control retains its configured value for testing.
 Training does not certify a model for production, and current minimum sample
 counts and quality gates are unchanged.
 
@@ -95,10 +96,10 @@ identity metadata require retraining. Inference preserves checkpoint preprocessi
 
 ### Reference edge measurement (experimental)
 
-In **SETTING > 3 TRAIN IMAGES > ADVANCED SETTINGS / EDGE MEASUREMENT**, select an image and choose
-**REFERENCE FROM ROUTER RECIPE** in the reference measurement card. This opens a separate
-editor; no trained model is required. It does **not** modify production GOOD/NG,
-labels, Sobel preprocessing or model weights.
+The reference editor remains in the code and tests, but its entry button is
+hidden in the final development UI. The following describes the retained
+experimental editor for developers; it is not a current operator workflow.
+It does not modify production GOOD/NG, labels, Sobel preprocessing or model weights.
 
 1. Click **MANUAL LINE** and drag along the nominal, known-good PCB boundary when using manual mode.
    Drag the endpoints to change its angle; MOVE buttons shift it one pixel normal
