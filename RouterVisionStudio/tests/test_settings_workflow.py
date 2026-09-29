@@ -17,6 +17,7 @@ import production_app as ui
 import torch
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QFontDatabase
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from router_vision.config import AppConfig
 from router_vision.interlock import GateState
@@ -36,7 +37,9 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.source = self.root / "source"
+        self.source = self.root / "SepData"
+        self.program = self.root / "Sep.Net"
+        self.program.mkdir()
         for folder in ("Picture", "Result", "Recipe"):
             (self.source / folder).mkdir(parents=True, exist_ok=True)
         for stamp in ("120010", "120015", "120210", "120215"):
@@ -67,9 +70,139 @@ class SettingsWorkflowTests(unittest.TestCase):
             recipe_dir=str(self.source / "Recipe"),
             eqp_cfg_path=str(self.source / "Config" / "Eqp.cfg"),
         )
-        self.window._set_settings_path(str(self.source))
+        self.window._set_settings_path(str(self.program))
         self.window.sobel_preview_timer.stop()
         self.window._sync_settings_controls()
+
+    def test_separate_program_path_prompts_for_data_and_cancel_preserves_trial(self):
+        program = self.root / "separate" / "Sep.Net"
+        program.mkdir(parents=True)
+        self.window.settings_trial_approved = True
+        with patch.object(ui.QFileDialog, "getExistingDirectory", return_value=""):
+            self.window._set_settings_path(str(program))
+        self.assertTrue(self.window.settings_trial_approved)
+        with patch.object(ui.QFileDialog, "getExistingDirectory", return_value=str(self.source)):
+            self.window._set_settings_path(str(program))
+        self.assertFalse(self.window.settings_trial_approved)
+        self.assertEqual(self.window.settings_image_dir, str(self.source))
+        self.assertEqual(len(self.window.settings_image_paths), 4)
+
+    def test_multiple_exports_prompt_without_merging_images(self):
+        (self.root / "other" / "Picture").mkdir(parents=True)
+        with patch.object(ui.QInputDialog, "getItem", return_value=(str(self.source), True)):
+            self.window._set_settings_path(str(self.root))
+        self.assertEqual(self.window.settings_image_dir, str(self.source))
+        self.assertEqual(len(self.window.settings_image_paths), 4)
+
+    def test_unlinked_and_multiple_product_source_is_not_shown_as_ready(self):
+        (self.source / "Result" / "_20260903_150000.csv").write_text(
+            "SN,ProductId,Result\n3,OTHER,True\n", encoding="utf-8"
+        )
+        self.window._set_settings_path(str(self.program))
+        self.assertIn("DATA REVIEW REQUIRED", self.window.lbl_auo_files.text())
+        self.assertIn("OTHER", self.window.lbl_auo_warning.text())
+        self.assertTrue(self.window.btn_continue_sobel.isEnabled())
+
+    def test_all_machine_paths_save_resolved_data_and_restore_source(self):
+        for selected in (self.program, self.root, self.source, self.source / "Picture"):
+            with self.subTest(selected=selected):
+                self.window._set_settings_path(str(selected))
+                self.model()
+                self.window.trial_input_signature = self.window._trial_signature()
+                self.window._vision_trial_done(
+                    [(p, "GOOD", 0.99) for p in self.window.settings_image_paths]
+                )
+                self.assertTrue(self.window._apply_settings())
+                saved = AppConfig.load(ui.CONFIG_PATH)
+                self.assertEqual(saved.picture_dir, str(self.source / "Picture"))
+                self.assertEqual(saved.result_dir, str(self.source / "Result"))
+                self.assertEqual([len(run.pictures) for run in self.window.queue], [2, 2])
+                self.window._set_settings_path(self.window._load_sobel_source_path())
+                self.assertEqual(self.window.settings_image_dir, str(self.source))
+
+    def approve_trial(self):
+        self.model()
+        self.window.trial_input_signature = self.window._trial_signature()
+        self.window._vision_trial_done(
+            [(path, "GOOD", 0.99) for path in self.window.settings_image_paths]
+        )
+        self.assertTrue(self.window.settings_trial_approved)
+
+    def test_changed_result_after_test_cannot_save_stale_panel_assignments(self):
+        self.approve_trial()
+        previous = asdict(self.window.cfg)
+        result = next((self.source / "Result").glob("_*.csv"))
+        result.write_text(result.read_text().replace("PRODUCT-A", "OTHER-PRODUCT"))
+        self.assertFalse(self.window._apply_settings())
+        self.assertFalse(self.window.settings_trial_approved)
+        self.assertEqual(asdict(self.window.cfg), previous)
+        self.assertFalse(ui.CONFIG_PATH.exists())
+
+    def test_added_result_after_selection_requires_reload_before_test(self):
+        self.model()
+        (self.source / "Result" / "_20260903_150000.csv").write_text(
+            "SN,ProductId,Result\n3,OTHER,True\n"
+        )
+        with patch.object(ui, "VisionTrialWorker") as worker:
+            self.window._test_vision_transformer()
+        worker.assert_not_called()
+        self.assertFalse(self.window.settings_trial_approved)
+        self.assertIn("Result data changed", self.window.lbl_trial_result.text())
+
+    def test_deleted_result_during_trial_rejects_completed_predictions(self):
+        self.model()
+        self.window.trial_input_signature = self.window._trial_signature()
+        next((self.source / "Result").glob("_*.csv")).unlink()
+        self.window._vision_trial_done(
+            [(path, "GOOD", 0.99) for path in self.window.settings_image_paths]
+        )
+        self.assertFalse(self.window.settings_trial_approved)
+        self.assertIn("Result data changed", self.window.lbl_trial_result.text())
+
+    def test_result_disconnect_while_saving_preserves_config(self):
+        self.approve_trial()
+        previous = asdict(self.window.cfg)
+        with patch.object(ui, "available_days", side_effect=OSError("disconnected")):
+            self.assertFalse(self.window._apply_settings())
+        self.assertEqual(asdict(self.window.cfg), previous)
+        self.assertFalse(ui.CONFIG_PATH.exists())
+        self.assertFalse(self.window.settings_trial_approved)
+
+    def test_reload_failure_after_config_save_does_not_report_success(self):
+        self.approve_trial()
+        days = ui.available_days(str(self.source / "Result"))
+        with patch.object(ui, "available_days", side_effect=[days, OSError("disconnected")]):
+            self.assertFalse(self.window._apply_settings())
+        self.assertTrue(ui.CONFIG_PATH.exists())
+        self.assertIn("DATA RELOAD FAILED", self.window.lbl_trial_result.text())
+        self.assertEqual(self.window.queue, [])
+        self.assertEqual(self.window.link.state, GateState.FAULT)
+
+    def test_dataset_read_failure_discards_old_queue_and_model(self):
+        self.approve_trial()
+        self.assertTrue(self.window._apply_settings())
+        self.assertTrue(self.window.queue)
+        with patch.object(ui, "scan_auo6000_dataset", side_effect=OSError("disconnected")):
+            self.window._load_dataset()
+        self.assertEqual(self.window.queue, [])
+        self.assertIsNone(self.window.classifier)
+        self.assertEqual(self.window.runs_by_key, {})
+        self.assertEqual(self.window.cmb_recipe.count(), 0)
+        self.assertEqual(self.window.link.state, GateState.FAULT)
+
+    def test_config_cannot_be_saved_in_selected_machine_root(self):
+        self.approve_trial()
+        target = self.source / "app-settings.json"
+        with patch.object(ui, "CONFIG_PATH", target), patch.object(ui.QMessageBox, "critical"):
+            self.assertFalse(self.window._apply_settings())
+        self.assertFalse(target.exists())
+
+    def test_malformed_prediction_rows_fail_closed_without_crashing(self):
+        self.model()
+        self.window.trial_input_signature = self.window._trial_signature()
+        self.window._vision_trial_done([()])
+        self.assertFalse(self.window.settings_trial_approved)
+        self.assertFalse(self.window.btn_apply_settings.isEnabled())
 
     def model(self, *, sobel=None, quality=1.0):
         classifier = CutClassifier(crop=CropBox(0, 0, 100, 80), sobel=sobel, model_key="PRODUCT-A")
@@ -179,7 +312,7 @@ class SettingsWorkflowTests(unittest.TestCase):
             [(path, "GOOD", 0.99) for path in self.window.settings_image_paths]
         )
         self.window._refresh_training_workflow_status()
-        self.assertIn("4b SAVE TESTED SETTINGS", self.window.lbl_training_next_step.text())
+        self.assertIn("START TEST & SAVE SETTINGS", self.window.lbl_training_next_step.text())
 
     def test_training_actions_are_disabled_during_inspection(self):
         self.window.auto_running = True
@@ -219,11 +352,11 @@ class SettingsWorkflowTests(unittest.TestCase):
         ):
             self.window.btn_sobel_good.click()
         self.assertEqual(self.window._training_items(), [])
-        self.assertIn("UNLABELED", self.window.lbl_sobel_label.text())
+        self.assertIn("UNLABELED", self.window.lbl_current_image_context.text())
 
     def test_sobel_label_and_save_status_follow_saving_edits_and_image_selection(self):
         window = self.window
-        self.assertIn("NOT SAVED", window.lbl_sobel_label.text())
+        self.assertIn("NOT SAVED", window.lbl_current_image_context.text())
         window.btn_sobel_good.click()
         self.assertEqual(window.btn_sobel_good.text(), "SAVED AS GOOD")
         self.assertIn("LABEL GOOD  |  SAVED", window.lbl_current_image_context.text())
@@ -246,7 +379,7 @@ class SettingsWorkflowTests(unittest.TestCase):
         window.slider_gradient_x.setValue(original)
         self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
         window.cmb_settings_image.setCurrentIndex(1)
-        self.assertIn("UNLABELED", window.lbl_sobel_label.text())
+        self.assertIn("UNLABELED", window.lbl_current_image_context.text())
         self.assertEqual(window.btn_sobel_ng.text(), "SAVE AS NG")
         window.cmb_settings_image.setCurrentIndex(0)
         self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
@@ -382,6 +515,36 @@ class SettingsWorkflowTests(unittest.TestCase):
                 tab, window.btn_continue_training.rect().topLeft()
             )
             self.assertGreater(footer.y(), panel.mapTo(tab, panel.rect().bottomRight()).y())
+
+    def test_sobel_navigation_keeps_preview_scale_after_layout_changes(self):
+        window = self.window
+        window.settings_panel.show()
+        window.image_card.hide()
+        window.log_card.hide()
+        window.settings_workflow.setCurrentIndex(1)
+        window.show()
+        window._preview_sobel()
+        QTest.qWait(100)
+        preview = window.lbl_settings_preview
+        splitter = window.sobel_parameter_panel.parentWidget()
+        for width, height in ((1366, 768), (1920, 1080), (960, 640)):
+            window.resize(width, height)
+            QTest.qWait(100)
+            for sizes in ([500, 700], [800, 400]):
+                splitter.setSizes(sizes)
+                QTest.qWait(100)
+                frame_size = preview.size()
+                image_size = preview.pixmap().size()
+                self.assertFalse(preview.pixmap().isNull())
+                for button in (window.btn_next_image, window.btn_previous_image):
+                    for _ in range(window.cmb_settings_image.count()):
+                        previous_path = window.settings_image_path
+                        button.click()
+                        QTest.qWait(100)
+                        with self.subTest(window=(width, height), sizes=sizes):
+                            self.assertNotEqual(window.settings_image_path, previous_path)
+                            self.assertEqual(preview.size(), frame_size)
+                            self.assertEqual(preview.pixmap().size(), image_size)
 
     def test_parameter_plus_minus_preserve_step_and_limits(self):
         for slider, increase, decrease in self.window.sobel_parameter_step_buttons:
@@ -600,6 +763,59 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertFalse(event.isAccepted())
         worker.requestInterruption.assert_called_once()
         self.window.settings_worker = None
+
+    def test_full_hd_settings_fills_window_and_keeps_actions_visible(self):
+        window = self.window
+        window.settings_panel.show()
+        window.image_card.hide()
+        window.log_card.hide()
+        window.show()
+        window._preview_sobel()
+        for width, height in ((1920, 1080), (1536, 864), (1920, 1040)):
+            window.resize(width, height)
+            for tab in (1, 2):
+                window.settings_workflow.setCurrentIndex(tab)
+                for _ in range(10):
+                    self.app.processEvents()
+                bottom = window.settings_panel.mapTo(
+                    window.centralWidget(), window.settings_panel.rect().bottomRight()
+                ).y()
+                self.assertLessEqual(window.centralWidget().height() - bottom - 1, 12)
+                if tab == 1:
+                    preview = window.lbl_settings_preview
+                    self.assertTrue(preview.rect().contains(preview.pixmap().rect()))
+                    if width == 1920:
+                        self.assertGreater(preview.pixmap().height(), 300)
+                else:
+                    viewport = window.trial_preview_scroll.viewport()
+                    self.assertTrue(
+                        viewport.rect().contains(window.lbl_trial_preview.pixmap().rect())
+                    )
+                    if width == 1920:
+                        self.assertGreater(window.lbl_trial_preview.pixmap().height(), 300)
+                    self.assertEqual(window.vision_workspace.orientation(), Qt.Horizontal)
+                    controls = window.vision_workflow_scroll.viewport()
+                    for button in (
+                        window.btn_train_model,
+                        window.btn_trial,
+                        window.btn_apply_settings,
+                    ):
+                        if width < 1920:
+                            window.vision_workflow_scroll.ensureWidgetVisible(button)
+                            self.app.processEvents()
+                        self.assertTrue(
+                            controls.rect().contains(
+                                button.mapTo(controls, button.rect().topLeft())
+                            )
+                        )
+                        self.assertTrue(
+                            controls.rect().contains(
+                                button.mapTo(controls, button.rect().bottomRight())
+                            )
+                        )
+                    self.assertEqual(
+                        window.vision_workflow_scroll.horizontalScrollBar().maximum(), 0
+                    )
 
     def test_small_screen_keeps_vision_controls_accessible(self):
         self.model()

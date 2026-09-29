@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,10 +122,6 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn("def _test_vision_transformer", source)
         self.assertIn("spin_confidence", source)
         self.assertIn('QLabel("1. AUROTEK AUO6000 DATA PATH")', source)
-        self.assertIn(
-            "Select one machine export root containing Picture, Result, Log and Recipe.",
-            source,
-        )
         self.assertIn("QFileDialog.getExistingDirectory", source)
         self.assertIn("def _set_settings_path", source)
         self.assertIn("scan_auo6000_dataset", source)
@@ -187,7 +184,7 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn("4  TEST & SAVE SETTINGS", source)
         self.assertIn('QPushButton("GOOD — SAVE & NEXT")', source)
         self.assertIn('QPushButton("NG — SAVE & NEXT")', source)
-        self.assertIn('QPushButton("3  TRAIN & SAVE MODEL")', source)
+        self.assertIn('QPushButton("START TRAIN THE MODEL")', source)
         self.assertIn("MIN_TRAINING_IMAGES_PER_CLASS = 5", source)
         self.assertIn("class ModelTrainingWorker", source)
         self.assertIn("def _train_settings_model", source)
@@ -206,7 +203,7 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn("setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)", source)
         self.assertIn("self.trial_preview_pixmap", source)
         self.assertIn("MANUAL LABEL", source)
-        self.assertIn('prediction_text = f"PREDICT:', source)
+        self.assertIn('prediction_text = f"PREDICT:', inspect.getsource(render_prediction_overview))
         self.assertIn('active_separator = QLabel("|")', source)
         self.assertIn('f"Recipe Name : {spec.get', source)
         self.assertNotIn('f"ACTIVE:', source)

@@ -3,11 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from router_vision.auo6000 import (
     AUO6000Dataset,
     AUO6000Image,
     AUO6000Panel,
+    SourceSelectionError,
     scan_auo6000_dataset,
 )
 
@@ -24,6 +26,65 @@ LEGACY_CSV_HEADER = (
 
 
 class AUO6000DatasetTests(unittest.TestCase):
+    def test_changed_csv_during_scan_rejects_inconsistent_dataset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self._folders(root)
+            with patch(
+                "router_vision.auo6000.result_files_signature",
+                side_effect=[(("file", 10, 1),), (("file", 20, 2),)],
+            ):
+                with self.assertRaisesRegex(OSError, "Result data changed"):
+                    scan_auo6000_dataset(root)
+
+    def test_machine_paths_resolve_only_picture_and_exclude_samples(self):
+        with tempfile.TemporaryDirectory() as folder:
+            wrapper = Path(folder)
+            data = wrapper / "SepData"
+            data.mkdir()
+            picture, result, _, _ = self._folders(data)
+            program = wrapper / "Sep.Net"
+            program.mkdir()
+            (data / "Temp").mkdir()
+            self._image(data / "Temp" / "Sample.bmp")
+            self._image(program / "resource.bmp")
+            self._image(picture / "20260903_120010.bmp")
+            (result / "_20260903_120030.csv").write_text(
+                CSV_HEADER + "1,,P.rcp,P,1,4,0,0,True,0,20\n", encoding="utf-8"
+            )
+            for selected in (wrapper, data, program, picture):
+                with self.subTest(selected=selected):
+                    dataset = scan_auo6000_dataset(selected)
+                    self.assertEqual(Path(dataset.root), data)
+                    self.assertEqual(len(dataset.images), 1)
+                    self.assertEqual(dataset.images[0].panel_sn, "1")
+
+    def test_multiple_exports_require_explicit_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("SepData", "other-machine"):
+                (root / name / "Picture").mkdir(parents=True)
+            with self.assertRaises(SourceSelectionError) as caught:
+                scan_auo6000_dataset(root)
+            self.assertEqual(len(caught.exception.candidates), 2)
+
+    def test_program_without_sibling_data_never_scans_resource_images(self):
+        with tempfile.TemporaryDirectory() as folder:
+            program = Path(folder) / "Sep.Net"
+            program.mkdir()
+            self._image(program / "resource.bmp")
+            with self.assertRaises(SourceSelectionError):
+                scan_auo6000_dataset(program)
+
+    def test_incomplete_sepdata_never_uses_temp_images(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder) / "SepData"
+            (data / "Temp").mkdir(parents=True)
+            self._image(data / "Temp" / "Sample.bmp")
+            for selected in (data, data.parent):
+                with self.assertRaises(SourceSelectionError):
+                    scan_auo6000_dataset(selected)
+
     @staticmethod
     def _folders(root: Path) -> tuple[Path, Path, Path, Path]:
         folders = tuple(root / name for name in ("Picture", "Result", "Recipe", "Log"))

@@ -59,6 +59,7 @@ class AUO6000Dataset:
     recipe_files: list[str] = field(default_factory=list)
     log_files: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    result_snapshot: tuple = ()
 
     @property
     def expected_cut_points(self) -> int:
@@ -159,14 +160,67 @@ def _stored_image_format(path: Path) -> str:
     return "UNKNOWN"
 
 
+class SourceSelectionError(ValueError):
+    """The operator must choose a data export explicitly."""
+
+    def __init__(self, message: str, candidates: list[Path] | None = None):
+        super().__init__(message)
+        self.candidates = candidates or []
+
+
 def _router_root(selected: Path) -> tuple[Path, Path]:
     selected = selected.resolve()
+    if not selected.is_dir():
+        raise OSError(f"Data source folder does not exist: {selected}")
     if selected.name.casefold() == "picture" and selected.parent.is_dir():
         return selected.parent, selected
+    # Sep.Net contains the machine program, not training pictures. Resolve only
+    # the named sibling; never search arbitrary drives or recurse into resources.
+    if selected.name.casefold() == "sep.net":
+        candidates = [
+            path
+            for path in selected.parent.iterdir()
+            if path.is_dir() and path.name.casefold() == "sepdata" and (path / "Picture").is_dir()
+        ]
+        if len(candidates) == 1:
+            return candidates[0], candidates[0] / "Picture"
+        raise SourceSelectionError(
+            "Sep.Net is the machine program folder. Select its corresponding SepData folder.",
+            candidates,
+        )
     picture = selected / "Picture"
     if picture.is_dir():
         return selected, picture
+    candidates = sorted(
+        (path for path in selected.iterdir() if path.is_dir() and (path / "Picture").is_dir()),
+        key=lambda path: str(path).casefold(),
+    )
+    if len(candidates) == 1:
+        return candidates[0], candidates[0] / "Picture"
+    if candidates:
+        raise SourceSelectionError(
+            "Multiple data exports found. Select one data source.", candidates
+        )
+    if selected.name.casefold() == "sepdata" or any(
+        path.is_dir() and path.name.casefold() in {"sep.net", "sepdata"}
+        for path in selected.iterdir()
+    ):
+        raise SourceSelectionError("Picture folder not found. Select a complete SepData export.")
     return selected, selected
+
+
+def result_files_signature(result_dir: str | Path) -> tuple:
+    """Detect CSV additions, removals and changes since panel assignment."""
+    if not result_dir:
+        return ()
+    directory = Path(result_dir)
+    # iterdir raises on disconnection instead of treating it as an empty export.
+    signatures = []
+    for path in directory.iterdir():
+        if path.name.startswith("_") and path.suffix.casefold() == ".csv":
+            stat = path.stat()
+            signatures.append((str(path.resolve()), stat.st_size, stat.st_mtime_ns))
+    return tuple(sorted(signatures))
 
 
 def _read_panels(result_dir: Path) -> list[AUO6000Panel]:
@@ -335,7 +389,10 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
     else:
         picture_paths = []
 
+    result_snapshot = result_files_signature(result_dir) if result_dir.is_dir() else ()
     panels = _read_panels(result_dir)
+    if result_snapshot != (result_files_signature(result_dir) if result_dir.is_dir() else ()):
+        raise OSError("Result data changed during scanning. Select the source again.")
     assignments, ambiguous_windows = _assign_picture_groups(picture_paths, panels)
     images: list[AUO6000Image] = []
     for group, panel in assignments:
@@ -363,6 +420,13 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
         [str(path.resolve()) for path in sorted(log_dir.glob("*.log"))] if log_dir.is_dir() else []
     )
     warnings: list[str] = []
+    products = sorted({panel.product_id.strip() for panel in panels if panel.product_id.strip()})
+    if len(products) != 1:
+        warnings.append(
+            f"Settings require one ProductId; found {len(products)}: "
+            + (", ".join(products) or "none")
+            + ". Select a verified single-product export before training."
+        )
     disguised = sum(
         1
         for image in images
@@ -376,8 +440,8 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
     unassigned = sum(1 for image in images if not image.result_file)
     if unassigned:
         warnings.append(
-            f"{unassigned} image(s) could not be linked to a panel result within "
-            f"{MAX_RESULT_LAG_SECONDS} seconds."
+            f"{unassigned} image(s) could not be linked unambiguously to a panel result. "
+            "Check capture times and Result records; Settings cannot be saved."
         )
     if ambiguous_windows:
         warnings.append(
@@ -402,4 +466,5 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
         recipe_files=recipe_files,
         log_files=log_files,
         warnings=warnings,
+        result_snapshot=result_snapshot,
     )

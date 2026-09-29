@@ -17,14 +17,14 @@ import sys
 import time
 import traceback
 import uuid
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QLocale, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QLocale, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -59,6 +59,8 @@ from PySide6.QtWidgets import (
 from router_vision.auo6000 import (
     AUO6000Dataset,
     AUO6000Image,
+    SourceSelectionError,
+    result_files_signature,
     scan_auo6000_dataset,
 )
 from router_vision.config import DEFAULT_CONFIG_NAME, AppConfig
@@ -72,6 +74,8 @@ from router_vision.model import (
     SobelConfig,
     model_quality_error,
 )
+from router_vision.overview import letterbox
+from router_vision.overview import render_prediction_overview as render_prediction_overview
 from router_vision.production import (
     STATUS_GOOD,
     STATUS_NG,
@@ -79,12 +83,22 @@ from router_vision.production import (
     PanelDecision,
     classify_panel,
 )
+from router_vision.production_style import APP_STYLE, COLORS, STATE_TEXT
 from router_vision.reference_ui import ReferenceMeasurementDialog
+from router_vision.routes import (
+    inferred_expected_images,
+    panel_id,
+    product_from_route_key,
+)
+from router_vision.routes import (
+    model_file_name as model_file_name,
+)
 from router_vision.toolpath import find_recipe
+from router_vision.training_edge import selection_record
+from router_vision.training_edge_ui import TrainingEdgeDialog
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / DEFAULT_CONFIG_NAME
-MODEL_PREFIX = "cut_classifier_"
 APP_NAME = "AVTR"
 APP_FULL_NAME = "Automatic Vision Tab Router"
 RECENT_RESULT_LIMIT = 5
@@ -112,297 +126,11 @@ SUPPORTED = {
     },
 }
 
-COLORS = {
-    GateState.OFFLINE: "#475569",
-    GateState.READY: "#1d4ed8",
-    GateState.INSPECTING: "#c2410c",
-    GateState.PASS: "#15803d",
-    GateState.NG: "#dc2626",
-    GateState.FAULT: "#dc2626",
-}
-
-APP_STYLE = """
-QWidget { background:#eef2f7; color:#172033; font-family:'Segoe UI'; font-size:10.5pt; }
-QFrame#topBar { background-color:#0f172a; border:0; border-bottom:3px solid #2563eb; }
-QFrame#topBar QLabel { background:transparent; color:white; border:0; }
-QFrame#card { background:white; border:1px solid #d8e0ea; border-radius:10px; }
-QFrame#settingsPanel { background:#e7edf4; border:1px solid #94a3b8; border-radius:8px; }
-QFrame#settingsHeader { background:#eaf2ff; border:1px solid #bfdbfe; border-radius:10px; }
-QFrame#settingsHeader QLabel { background:transparent; border:0; }
-QFrame#settingsCard { background:white; border:1px solid #b8c4d4; border-radius:6px; }
-QFrame#settingsCard QLabel { background:transparent; border:0; }
-QWidget#settingsPage, QFrame#settingsPage { background:#e7edf4; border:0; }
-QFrame#pageHeader { background:#17324d; border:0; border-left:5px solid #2563eb; border-radius:5px; }
-QFrame#pageHeader QLabel { background:transparent; border:0; }
-QLabel#pageTitle { color:white; font-size:11pt; font-weight:800; }
-QLabel#pageSubtitle { color:#cbd5e1; font-size:9pt; }
-QFrame#controlDeck { background:white; border:1px solid #b8c4d4; border-radius:6px; }
-QFrame#parameterCard { background:#f8fafc; border:1px solid #cbd5e1; border-radius:5px; }
-QFrame#sourceCard { background:white; border:1px solid #b8c4d4; border-radius:6px; }
-QLabel#sourceCaption { color:#64748b; font-size:9pt; font-weight:700; }
-QLabel#sourceValue { color:#0f172a; font-size:10.5pt; font-weight:800; }
-QTabWidget#settingsTabs { background:#e7edf4; border:0; }
-QTabWidget#settingsTabs::pane { background:#e7edf4; border:0; top:0; }
-QTabWidget#settingsTabs::tab-bar { left:12px; }
-QTabWidget#settingsTabs QTabBar::tab { background:white; color:#334155; border:1px solid #aebccc; border-radius:5px; padding:11px 22px; margin:7px 6px 8px 0; font-weight:800; }
-QTabWidget#settingsTabs QTabBar::tab:selected { background:#1d4ed8; color:white; border-color:#1d4ed8; }
-QTabWidget#settingsTabs QTabBar::tab:hover:!selected { background:#eff6ff; color:#1d4ed8; border-color:#60a5fa; }
-QPushButton { background:#334155; color:white; border:0; border-radius:5px; padding:8px 13px; font-weight:700; }
-QPushButton:hover { background:#1e293b; }
-QPushButton:pressed { padding-top:9px; padding-bottom:7px; }
-QPushButton:disabled { background:#cbd5e1; color:#f8fafc; }
-QPushButton#primary { background:#16a34a; font-size:12pt; }
-QPushButton#primary:hover { background:#15803d; }
-QPushButton#testAction { background:#2563eb; font-size:11pt; }
-QPushButton#testAction:hover { background:#1d4ed8; }
-QPushButton#saveAction { background:#16a34a; font-size:11pt; }
-QPushButton#saveAction:hover { background:#15803d; }
-QPushButton#saveSobel { background:#16a34a; }
-QPushButton#saveSobel:hover { background:#15803d; }
-QPushButton#hold { background:#dc2626; font-size:12pt; }
-QPushButton#hold:hover { background:#b91c1c; }
-QPushButton#outline { background:white; color:#1d4ed8; border:1px solid #2563eb; }
-QPushButton#outline:hover { background:#eff6ff; }
-QPushButton#secondaryAction { background:#f8fafc; color:#334155; border:1px solid #94a3b8; }
-QPushButton#secondaryAction:hover { background:#e2e8f0; }
-QPushButton#nextWork { background:#fff7ed; color:#9a3412; border:1px solid #f59e0b; }
-QPushButton#nextWork:hover { background:#ffedd5; }
-QPushButton#settings { background:#e2e8f0; color:#334155; border:1px solid #cbd5e1; }
-QPushButton#stepArrow { background:#e2e8f0; color:#1d4ed8; border:1px solid #b8c4d4; border-radius:6px; padding:4px; font-weight:900; }
-QPushButton#stepArrow:hover { background:#dbeafe; }
-QComboBox, QDoubleSpinBox, QLineEdit { background:white; border:1px solid #b8c4d4; border-radius:6px; padding:7px 10px; }
-QComboBox:focus, QDoubleSpinBox:focus, QLineEdit:focus { border:2px solid #2563eb; }
-QSlider::groove:horizontal { background:#cbd5e1; height:7px; border-radius:3px; }
-QSlider::sub-page:horizontal { background:#2563eb; border-radius:3px; }
-QSlider::handle:horizontal { background:white; border:2px solid #2563eb; width:18px; margin:-7px 0; border-radius:10px; }
-QTableWidget { background:white; alternate-background-color:#f8fafc; border:1px solid #d8e0ea; border-radius:7px; gridline-color:#e7edf4; }
-QTableWidget::item { padding:6px; }
-QTableWidget::item:selected { background:#dbeafe; color:#172033; }
-QHeaderView::section { background:#eaf0f7; color:#334155; padding:8px; border:0; border-right:1px solid #d8e0ea; font-weight:700; }
-QProgressBar { background:#dbe3ed; border:0; border-radius:4px; height:8px; }
-QProgressBar::chunk { background:#2563eb; border-radius:4px; }
-QSplitter::handle { background:#cbd5e1; }
-QSplitter::handle:horizontal { width:5px; margin:0 2px; }
-QScrollBar:vertical { background:#e2e8f0; width:12px; margin:0; }
-QScrollBar::handle:vertical { background:#94a3b8; border-radius:5px; min-height:32px; margin:2px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
-"""
-
-STATE_TEXT = {
-    GateState.OFFLINE: "OFFLINE",
-    GateState.READY: "READY",
-    GateState.INSPECTING: "INSPECTING",
-    GateState.PASS: "GOOD",
-    GateState.NG: "NG",
-    GateState.FAULT: "NG",
-}
-
 
 def bgr_to_pixmap(image) -> QPixmap:
     height, width, channels = image.shape
     qimage = QImage(image.data, width, height, channels * width, QImage.Format_BGR888)
     return QPixmap.fromImage(qimage.copy())
-
-
-def _letterbox(image: np.ndarray | None, width: int, height: int) -> np.ndarray:
-    """Fit an image into a fixed dark canvas without changing its aspect ratio."""
-    canvas = np.full((height, width, 3), 28, dtype=np.uint8)
-    if image is None or image.size == 0:
-        cv2.putText(
-            canvas,
-            "UNREADABLE",
-            (max(8, width // 2 - 54), height // 2),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (180, 180, 180),
-            1,
-            cv2.LINE_AA,
-        )
-        return canvas
-    if image.ndim == 2:
-        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    source_h, source_w = image.shape[:2]
-    scale = min(width / max(1, source_w), height / max(1, source_h))
-    target_w = max(1, int(round(source_w * scale)))
-    target_h = max(1, int(round(source_h * scale)))
-    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(image, (target_w, target_h), interpolation=interpolation)
-    x0 = (width - target_w) // 2
-    y0 = (height - target_h) // 2
-    canvas[y0 : y0 + target_h, x0 : x0 + target_w] = resized
-    return canvas
-
-
-def render_prediction_overview(
-    classifier,
-    result: PanelDecision,
-    good_confidence_min: float = 0.95,
-    *,
-    cell_width: int = 360,
-    cell_height: int = 220,
-    tile_context: dict[str, str] | None = None,
-    columns: int | None = None,
-) -> np.ndarray:
-    """Render every cut point into one Original/Sobel/prediction overview.
-
-    Each cut-point tile always reserves the left pane for the cropped original
-    image and the right pane for the exact Sobel edge map used by the model.
-    The prediction is written beside the cut-point name in the top strip so it
-    never covers evidence in either image pane.
-    """
-    details = sorted(result.details, key=lambda item: item.index)
-    count = len(details)
-    if not count:
-        empty = np.full((240, 720, 3), 24, dtype=np.uint8)
-        cv2.putText(
-            empty,
-            "NO CUT-POINT IMAGES AVAILABLE",
-            (118, 128),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (210, 210, 210),
-            2,
-            cv2.LINE_AA,
-        )
-        return empty
-
-    cell_width = max(260, int(cell_width))
-    cell_height = max(180, int(cell_height))
-    columns = (
-        min(6, max(1, math.ceil(math.sqrt(count))))
-        if columns is None
-        else max(1, min(int(columns), count))
-    )
-    rows = math.ceil(count / columns)
-    gap = 10
-    overview_width = columns * cell_width + (columns + 1) * gap
-    overview_height = rows * cell_height + (rows + 1) * gap
-    overview = np.full((overview_height, overview_width, 3), 20, dtype=np.uint8)
-
-    for slot, detail in enumerate(details):
-        row, column = divmod(slot, columns)
-        x0 = gap + column * (cell_width + gap)
-        y0 = gap + row * (cell_height + gap)
-        tile = np.full((cell_height, cell_width, 3), 32, dtype=np.uint8)
-
-        original = cv2.imread(str(detail.path), cv2.IMREAD_COLOR)
-        if original is not None:
-            original = classifier.crop.apply(original)
-        edge = classifier.extractor.edge_map(detail.path, classifier.crop)
-
-        top = 31
-        bottom = 24
-        pane_gap = 4
-        pane_width = (cell_width - pane_gap) // 2
-        pane_height = cell_height - top - bottom
-        tile[top : top + pane_height, :pane_width] = _letterbox(original, pane_width, pane_height)
-        tile[top : top + pane_height, pane_width + pane_gap :] = _letterbox(
-            edge, cell_width - pane_width - pane_gap, pane_height
-        )
-
-        label = detail.label or "UNREADABLE"
-        confidence = float(detail.confidence)
-        if label == "GOOD" and confidence >= good_confidence_min:
-            colour = (45, 145, 55)
-        elif label == "NG":
-            colour = (40, 40, 215)
-        else:
-            colour = (0, 140, 230)
-
-        point_text = (
-            tile_context.get(detail.path, f"CUT POINT {detail.index + 1:02d} | ")
-            if tile_context
-            else f"CUT POINT {detail.index + 1:02d} | "
-        )
-        prediction_text = f"PREDICT: {label} {confidence:.1%}"
-        if label == "GOOD" and confidence < good_confidence_min:
-            prediction_text += " | BELOW THRESHOLD"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.48
-        while font_scale > 0.32:
-            point_width = cv2.getTextSize(point_text, font, font_scale, 1)[0][0]
-            prediction_width = cv2.getTextSize(prediction_text, font, font_scale, 1)[0][0]
-            if point_width + prediction_width <= cell_width - 18:
-                break
-            font_scale -= 0.02
-        point_width = cv2.getTextSize(point_text, font, font_scale, 1)[0][0]
-        header_colour = (
-            (80, 220, 95)
-            if label == "GOOD" and confidence >= good_confidence_min
-            else (70, 80, 245)
-            if label == "NG"
-            else (30, 175, 245)
-        )
-        cv2.putText(
-            tile,
-            point_text,
-            (9, 22),
-            font,
-            font_scale,
-            (238, 238, 238),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            tile,
-            prediction_text,
-            (9 + point_width, 22),
-            font,
-            font_scale,
-            header_colour,
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            tile,
-            "ORIGINAL",
-            (8, cell_height - 7),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (205, 205, 205),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            tile,
-            "SOBEL EDGE",
-            (pane_width + pane_gap + 8, cell_height - 7),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (205, 205, 205),
-            1,
-            cv2.LINE_AA,
-        )
-
-        cv2.rectangle(tile, (0, 0), (cell_width - 1, cell_height - 1), colour, 3)
-        overview[y0 : y0 + cell_height, x0 : x0 + cell_width] = tile
-
-    return overview
-
-
-def panel_id(run: Run) -> str:
-    return run.sn.strip() or run.run_id.strip() or run.result_file
-
-
-def model_file_name(key: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
-    return f"{MODEL_PREFIX}{safe}.pt"
-
-
-def product_from_route_key(key: str) -> str:
-    """Return ProductId from either ``ProductId`` or ``ProductId|Table``."""
-    return str(key).split("|", 1)[0].strip()
-
-
-def inferred_expected_images(runs: list[Run]) -> int:
-    """Infer the normal image count while incomplete runs still fail closed."""
-    counts = Counter(len(run.pictures) for run in runs if run.pictures)
-    if not counts:
-        return 0
-    most_common = counts.most_common()
-    if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
-        return 0
-    return int(most_common[0][0])
 
 
 class DemoClassifier:
@@ -630,7 +358,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_FULL_NAME} — SCRIPTED DEMO" if DEMO_MODE else APP_FULL_NAME)
-        self.resize(1440, 900)
+        available = self.screen().availableGeometry()
+        self.resize(min(1920, available.width()), min(1080, available.height()))
         self.setMinimumSize(960, 640)
 
         self.cfg = AppConfig.load(CONFIG_PATH)
@@ -676,6 +405,7 @@ class MainWindow(QMainWindow):
         self.auo_dataset: AUO6000Dataset | None = None
         self.settings_image_metadata: dict[str, AUO6000Image] = {}
         self.sobel_records = self._load_sobel_records()
+        self.edge_review = self._load_edge_review_state()
         self._loading_sobel_parameters = False
         self.sobel_preview_timer = QTimer(self)
         self.sobel_preview_timer.setSingleShot(True)
@@ -939,7 +669,7 @@ class MainWindow(QMainWindow):
         self.txt_settings_path = QLineEdit()
         self.txt_settings_path.setReadOnly(True)
         self.txt_settings_path.setPlaceholderText(
-            "Select the AUO6000 export root containing Picture, Result, Log and Recipe"
+            "Select Sep.Net, SepData, Picture or their parent folder"
         )
         self.lbl_settings_image_count = QLabel("0 PANELS | 0 IMAGES")
         self.lbl_settings_image_count.setStyleSheet(
@@ -991,7 +721,10 @@ class MainWindow(QMainWindow):
             button.setEnabled(False)
         self.lbl_settings_preview = QLabel("Select an image to compare ORIGINAL and SOBEL EDGE")
         self.lbl_settings_preview.setAlignment(Qt.AlignCenter)
-        self.lbl_settings_preview.setMinimumHeight(280)
+        self.lbl_settings_preview.setMinimumSize(1, 160)
+        # The viewport controls scaling; the rendered pixmap must not resize it.
+        self.lbl_settings_preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.lbl_settings_preview.installEventFilter(self)
         self.lbl_settings_preview.setStyleSheet(
             "background:#0b1220; color:#cbd5e1; border:1px solid #334155; border-radius:7px;"
         )
@@ -1003,7 +736,6 @@ class MainWindow(QMainWindow):
             "background:#e2e8f0; color:#334155; border-radius:7px; padding:10px; font-weight:800;"
         )
         self.lbl_trial_result.setMinimumHeight(54)
-        self.lbl_trial_result.setMaximumHeight(92)
 
         self.settings_workflow = QTabWidget()
         self.settings_workflow.setObjectName("settingsTabs")
@@ -1013,6 +745,7 @@ class MainWindow(QMainWindow):
 
         source_page = QWidget()
         source_page.setObjectName("settingsPage")
+        source_page.setMinimumHeight(720)
         source_layout = QVBoxLayout(source_page)
         source_layout.setContentsMargins(14, 10, 14, 12)
         source_layout.setSpacing(10)
@@ -1023,12 +756,7 @@ class MainWindow(QMainWindow):
         source_header_layout.setSpacing(2)
         step_one = QLabel("1. AUROTEK AUO6000 DATA PATH")
         step_one.setObjectName("pageTitle")
-        step_one_help = QLabel(
-            "Select one machine export root containing Picture, Result, Log and Recipe."
-        )
-        step_one_help.setObjectName("pageSubtitle")
         source_header_layout.addWidget(step_one)
-        source_header_layout.addWidget(step_one_help)
         image_row = QHBoxLayout()
         image_row.addWidget(self.btn_select_image)
         image_row.addWidget(self.txt_settings_path, 1)
@@ -1038,6 +766,7 @@ class MainWindow(QMainWindow):
 
         self.lbl_auo_files = QLabel("SELECT AN AUO6000 DATA SOURCE TO CONTINUE")
         self.lbl_auo_files.setAlignment(Qt.AlignCenter)
+        self.lbl_auo_files.setWordWrap(True)
         self.lbl_auo_files.setStyleSheet(
             "background:#e2e8f0; color:#475569; border-radius:7px; "
             "padding:10px 12px; font-weight:800;"
@@ -1089,6 +818,9 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(folders_title)
         self.tbl_auo_folders = QTableWidget(4, 4)
         self.tbl_auo_folders.setHorizontalHeaderLabels(["DATA", "STATUS", "FILES", "LOCATION"])
+        self.tbl_auo_folders.horizontalHeaderItem(3).setTextAlignment(
+            Qt.AlignLeft | Qt.AlignVCenter
+        )
         self.tbl_auo_folders.verticalHeader().setVisible(False)
         self.tbl_auo_folders.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_auo_folders.setSelectionMode(QAbstractItemView.NoSelection)
@@ -1120,7 +852,11 @@ class MainWindow(QMainWindow):
         self.btn_continue_sobel.clicked.connect(lambda: self.settings_workflow.setCurrentIndex(1))
         continue_row.addWidget(self.btn_continue_sobel)
         source_layout.addLayout(continue_row)
-        self.settings_workflow.addTab(source_page, "1  DATA SOURCE")
+        source_scroll = QScrollArea()
+        source_scroll.setWidgetResizable(True)
+        source_scroll.setFrameShape(QFrame.NoFrame)
+        source_scroll.setWidget(source_page)
+        self.settings_workflow.addTab(source_scroll, "1  DATA SOURCE")
 
         sobel_card = QWidget()
         sobel_card.setObjectName("settingsPage")
@@ -1161,8 +897,6 @@ class MainWindow(QMainWindow):
         image_status.addWidget(self.btn_next_unsaved)
         image_status.addWidget(self.btn_save_sobel)
         sobel_control_layout.addLayout(image_status)
-        self.lbl_sobel_label = QLabel("TRAINING LABEL: UNLABELED")
-        self.lbl_sobel_label.setWordWrap(True)
         self.btn_sobel_good = QPushButton("SAVE AS GOOD")
         self.btn_sobel_good.setStyleSheet("background:#16a34a; color:white; font-weight:800;")
         self.btn_sobel_good.clicked.connect(lambda: self._label_sobel_image("GOOD"))
@@ -1305,7 +1039,6 @@ class MainWindow(QMainWindow):
         sobel_workspace.setSizes([1100, 700])
         sobel_layout.addWidget(sobel_workspace, 1)
         training_continue_row = QHBoxLayout()
-        training_continue_row.addWidget(self.lbl_sobel_label)
         training_continue_row.addStretch(1)
         self.btn_continue_training.setMinimumWidth(260)
         training_continue_row.addWidget(self.btn_continue_training)
@@ -1324,18 +1057,7 @@ class MainWindow(QMainWindow):
         decision_header_layout.setSpacing(2)
         step_three = QLabel("TRAIN IMAGES · FROM SOBEL TUNING")
         step_three.setObjectName("pageTitle")
-        step_three_help = QLabel(
-            "Images and saved GOOD / NG labels come directly from 2 SOBEL TUNING. "
-            "Review examples, train the model, then test and save settings."
-        )
-        step_three_help.setWordWrap(True)
-        step_three_help.setObjectName("pageSubtitle")
         decision_header_layout.addWidget(step_three)
-        decision_header_layout.addWidget(step_three_help)
-        self.lbl_training_setup = QLabel()
-        self.lbl_training_setup.setObjectName("pageSubtitle")
-        self.lbl_training_setup.setWordWrap(True)
-        decision_header_layout.addWidget(self.lbl_training_setup)
         self.lbl_trial_batch = QLabel("CURRENT BATCH: NO AUO6000 DATA SELECTED")
         self.lbl_trial_batch.setWordWrap(True)
         self.lbl_trial_batch.setStyleSheet(
@@ -1380,7 +1102,7 @@ class MainWindow(QMainWindow):
         self.lbl_label_progress.setWordWrap(True)
         self.lbl_label_progress.setStyleSheet("color:#475569; font-weight:700;")
 
-        self.btn_train_model = QPushButton("3  TRAIN & SAVE MODEL")
+        self.btn_train_model = QPushButton("START TRAIN THE MODEL")
         self.btn_train_model.setObjectName("primary")
         self.btn_train_model.clicked.connect(self._train_settings_model)
         self.training_progress = QProgressBar()
@@ -1405,6 +1127,7 @@ class MainWindow(QMainWindow):
             "QScrollArea { background:#0b1220; border:1px solid #334155; border-radius:8px; }"
         )
         self.trial_preview_scroll.setWidget(self.lbl_trial_preview)
+        self.trial_preview_scroll.viewport().installEventFilter(self)
         decision_layout.addWidget(decision_header)
         decision_layout.addWidget(self.lbl_trial_batch)
         self.lbl_training_next_step = QLabel("Prepare and label images in 2 SOBEL TUNING.")
@@ -1422,6 +1145,7 @@ class MainWindow(QMainWindow):
 
         vision_workspace = QSplitter(Qt.Horizontal)
         self.vision_workspace = vision_workspace
+        vision_workspace.installEventFilter(self)
         vision_workspace.setChildrenCollapsible(False)
         vision_workspace.splitterMoved.connect(lambda *_: self._fit_trial_preview())
 
@@ -1430,7 +1154,6 @@ class MainWindow(QMainWindow):
         review_layout = QVBoxLayout(review_card)
         review_layout.setContentsMargins(10, 9, 10, 10)
         review_layout.setSpacing(7)
-        review_layout.addWidget(self.lbl_trial_result)
         review_layout.addWidget(self.trial_preview_scroll, 1)
 
         # Label editing lives in Sobel Tuning; retain the existing action
@@ -1447,7 +1170,13 @@ class MainWindow(QMainWindow):
         label_selector.addWidget(self.btn_training_previous)
         label_selector.addWidget(self.btn_training_next)
         review_layout.insertLayout(0, label_selector)
-        review_layout.insertWidget(1, self.lbl_training_image_context)
+        self.btn_training_edge = QPushButton("SELECT PCB EDGE A/B")
+        self.btn_training_edge.setObjectName("outline")
+        self.btn_training_edge.clicked.connect(
+            lambda: self._open_training_edge(self._current_training_image_path())
+        )
+        review_layout.insertWidget(1, self.btn_training_edge)
+        review_layout.insertWidget(2, self.lbl_training_image_context)
         label_primary_actions = QHBoxLayout()
         label_primary_actions.setSpacing(6)
         label_primary_actions.addWidget(self.btn_label_good)
@@ -1511,7 +1240,7 @@ class MainWindow(QMainWindow):
         training_advanced_layout.addWidget(self.spin_confidence)
         test_layout.addWidget(test_note)
         self.btn_trial.setText("4a  TEST MODEL")
-        self.btn_apply_settings.setText("4b  SAVE TESTED SETTINGS")
+        self.btn_apply_settings.setText("START TEST && SAVE SETTINGS")
         test_layout.addWidget(self.btn_trial)
         test_layout.addWidget(self.btn_apply_settings)
 
@@ -1519,6 +1248,7 @@ class MainWindow(QMainWindow):
         workflow_layout = QVBoxLayout(workflow_content)
         workflow_layout.setContentsMargins(1, 1, 5, 1)
         workflow_layout.setSpacing(8)
+        workflow_layout.addWidget(self.lbl_trial_result)
         workflow_layout.addWidget(train_card)
         workflow_layout.addWidget(test_card)
         self.training_guide = QLabel(
@@ -1603,8 +1333,6 @@ class MainWindow(QMainWindow):
         self.settings_panel.setVisible(False)
         content_layout.addWidget(self.settings_panel, 1)
 
-        body = QHBoxLayout()
-        body.setSpacing(6)
         image_card = QFrame()
         self.image_card = image_card
         image_card.setObjectName("card")
@@ -1613,6 +1341,8 @@ class MainWindow(QMainWindow):
         self.image = QLabel("A valid Sobel-DINOv2 model is required before inspection")
         self.image.setAlignment(Qt.AlignCenter)
         self.image.setMinimumSize(600, 220)
+        self.image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.image.installEventFilter(self)
         self.image.setStyleSheet(
             "background:#0b1220; color:#cbd5e1; border:1px solid #1e293b; border-radius:8px;"
         )
@@ -1625,7 +1355,6 @@ class MainWindow(QMainWindow):
         self.lbl_alarm.setStyleSheet("color:#b91c1c; font-weight:700; padding:4px;")
         self.lbl_alarm.hide()
         image_layout.addWidget(self.lbl_alarm)
-        body.addWidget(image_card, 1)
 
         # Detailed I/O stays in the password-protected settings panel so the operator
         # view can devote its width to the complete cut-point overview.
@@ -1658,7 +1387,7 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         image_layout.addWidget(self.progress)
-        content_layout.addLayout(body, 1)
+        content_layout.addWidget(image_card, 1)
 
         log_card = QFrame()
         self.log_card = log_card
@@ -1695,21 +1424,33 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(page)
 
     # -- data -------------------------------------------------------------
-    def _load_dataset(self, dataset: AUO6000Dataset | None = None) -> None:
+    def _dataset_load_failed(self, reason: str) -> None:
+        """Discard stale production state before allowing any further inspection."""
+        self.runs_by_key.clear()
+        self.recipe_specs.clear()
+        self.queue.clear()
+        self.queue_index = 0
+        self.current_run = None
+        self.current_result = None
+        self.classifier = None
+        self.model_error = reason
+        self.cmb_recipe.blockSignals(True)
+        self.cmb_recipe.clear()
+        self.cmb_recipe.blockSignals(False)
+        self._software_hold(reason)
+
+    def _load_dataset(self, dataset: AUO6000Dataset | None = None) -> bool:
         result_dir = Path(self.cfg.result_dir)
         picture_dir = Path(self.cfg.picture_dir)
         if not result_dir.exists() or not picture_dir.exists():
-            self.runs_by_key.clear()
-            self.recipe_specs.clear()
-            self.cmb_recipe.clear()
-            self.link.fault("dataset path missing; check config.json")
+            self._dataset_load_failed("dataset path missing; check config.json")
             QMessageBox.critical(
                 self,
                 "Dataset missing",
                 f"Picture: {picture_dir}\nResult: {result_dir}\n\nUpdate config.json before running.",
             )
             self._refresh_gate()
-            return
+            return False
 
         previous_key = self.cfg.active_recipe or self.cmb_recipe.currentText()
         self.runs_by_key.clear()
@@ -1741,10 +1482,9 @@ class MainWindow(QMainWindow):
                 for run in runs:
                     if run.key and run.product_id.strip():
                         self.runs_by_key[run.key].append(run)
-        except OSError as exc:
-            self.link.fault(f"cannot load dataset: {exc}")
-            self._refresh_gate()
-            return
+        except (OSError, SourceSelectionError) as exc:
+            self._dataset_load_failed(f"cannot load dataset: {exc}")
+            return False
 
         for key, runs in self.runs_by_key.items():
             first = runs[0]
@@ -1767,6 +1507,7 @@ class MainWindow(QMainWindow):
                 self.cmb_recipe.setCurrentIndex(selected)
         self.cmb_recipe.blockSignals(False)
         self._recipe_changed()
+        return True
 
     def _recipe_changed(self) -> None:
         if self.link.state in (GateState.PASS, GateState.INSPECTING):
@@ -2371,6 +2112,12 @@ class MainWindow(QMainWindow):
 
     def _trial_signature(self):
         """Tie a completed test to the source, model and threshold it used."""
+        dataset = self.auo_dataset
+        if (
+            dataset is not None
+            and result_files_signature(dataset.result_dir) != dataset.result_snapshot
+        ):
+            raise OSError("Result data changed. Select the source again and rerun the model test.")
         model_path = self._model_path(self._settings_product_id())
         return (
             self.settings_image_dir,
@@ -2475,7 +2222,19 @@ class MainWindow(QMainWindow):
         records = raw.get("images", {}) if isinstance(raw, dict) else {}
         return records if isinstance(records, dict) else {}
 
-    def _save_sobel_records(self, records: dict[str, dict] | None = None) -> None:
+    def _load_edge_review_state(self) -> dict:
+        try:
+            raw = json.loads(SOBEL_WORKFLOW_PATH.read_text(encoding="utf-8"))
+            state = raw.get("edge_review", {})
+            if isinstance(state, dict) and isinstance(state.get("choices", {}), dict):
+                return state
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return {}
+
+    def _save_sobel_records(
+        self, records: dict[str, dict] | None = None, *, edge_review: dict | None = None
+    ) -> None:
         check_write_target(SOBEL_WORKFLOW_PATH, self._settings_protected_roots())
         SOBEL_WORKFLOW_PATH.parent.mkdir(parents=True, exist_ok=True)
         temporary = SOBEL_WORKFLOW_PATH.with_name(
@@ -2485,6 +2244,7 @@ class MainWindow(QMainWindow):
             "version": 3,
             "source_path": self.settings_image_dir,
             "images": self.sobel_records if records is None else records,
+            "edge_review": self.edge_review if edge_review is None else edge_review,
         }
         try:
             temporary.write_text(
@@ -2605,6 +2365,23 @@ class MainWindow(QMainWindow):
                 for image in dataset.images
                 if output_root not in Path(image.path).resolve().parents
             ]
+        except SourceSelectionError as exc:
+            if exc.candidates:
+                chosen, accepted = QInputDialog.getItem(
+                    self,
+                    "Select machine data",
+                    str(exc),
+                    [str(path) for path in exc.candidates],
+                    0,
+                    False,
+                )
+                if not accepted:
+                    return
+            else:
+                chosen = QFileDialog.getExistingDirectory(self, str(exc), str(root.parent))
+            if chosen and Path(chosen).resolve() != root.resolve():
+                self._set_settings_path(chosen)
+            return
         except OSError as exc:
             QMessageBox.warning(self, "Path could not be read", str(exc))
             return
@@ -2656,7 +2433,14 @@ class MainWindow(QMainWindow):
 
         matched_panels = len({image.result_file for image in dataset.images if image.result_file})
         linked_images = sum(bool(image.result_file) for image in dataset.images)
-        if image_count and panel_count:
+        product = self._settings_product_id()
+        if (
+            image_count
+            and panel_count
+            and linked_images == image_count
+            and product
+            and dataset.expected_cut_points
+        ):
             status = (
                 "READY FOR SOBEL TUNING\n"
                 f"{linked_images}/{image_count} images linked to {matched_panels}/{panel_count} panels"
@@ -2665,13 +2449,15 @@ class MainWindow(QMainWindow):
             colour = "#166534"
         elif image_count:
             status = (
-                "IMAGES FOUND - PANEL RESULTS NOT LINKED\n"
-                "Review the Result folder before continuing"
+                "SOBEL AVAILABLE - DATA REVIEW REQUIRED\n"
+                f"{linked_images}/{image_count} images linked | "
+                f"ProductId: {product or 'NOT UNIQUE / NOT FOUND'}\n"
+                "Verify one product, image-to-panel links and panel image counts before saving settings."
             )
             background = "#ffedd5"
             colour = "#9a3412"
         else:
-            status = "NO IMAGES FOUND\nSelect the AUO6000 export root or Picture folder"
+            status = "NO IMAGES FOUND\nSelect Sep.Net, SepData, Picture or their parent folder"
             background = "#fee2e2"
             colour = "#b91c1c"
         self.lbl_auo_files.setText(status)
@@ -2976,13 +2762,6 @@ class MainWindow(QMainWindow):
         self.cmb_training_image.blockSignals(False)
 
         total = len(self.settings_image_paths)
-        product = self._settings_product_id()
-        crop = self._settings_crop()
-        self.lbl_training_setup.setText(
-            f"FROM SOBEL TUNING · PRODUCT: {product or 'Not identified'}  ·  {total} images  ·  "
-            f"CROP: ({crop.x0}, {crop.y0}) to ({crop.x1}, {crop.y1}) px"
-        )
-        self.lbl_training_setup.setToolTip(self.settings_image_dir)
         for progress, name, count in (
             (self.training_good_progress, "GOOD", eligible_good),
             (self.training_ng_progress, "NG", eligible_ng),
@@ -3005,14 +2784,14 @@ class MainWindow(QMainWindow):
                 next_step = "PRODUCT NOT IDENTIFIED — check the shared source in 1 DATA SOURCE, then prepare images in 2 SOBEL TUNING."
             elif self.settings_trial_approved:
                 next_step = (
-                    "TEST COMPLETE — review predictions, then press 4b SAVE TESTED SETTINGS."
+                    "TEST COMPLETE — review predictions, then press START TEST & SAVE SETTINGS."
                 )
             elif (
                 self.settings_classifier is not None and not self._settings_model_needs_retraining()
             ):
                 next_step = "MODEL AVAILABLE — press 4a TEST MODEL to check predictions. You can also add examples and train again."
             elif ready:
-                next_step = "READY TO TRAIN — keep reviewing examples, or press TRAIN & SAVE MODEL. Then test the result."
+                next_step = "READY TO TRAIN — keep reviewing examples, or press START TRAIN THE MODEL. Then test the result."
             else:
                 need_good = max(0, MIN_TRAINING_IMAGES_PER_CLASS - eligible_good)
                 need_ng = max(0, MIN_TRAINING_IMAGES_PER_CLASS - eligible_ng)
@@ -3043,6 +2822,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(total > 1 and editing_enabled)
         for button in (self.btn_label_good, self.btn_label_ng, self.btn_clear_label):
             button.setEnabled(has_image and editing_enabled)
+        self.btn_training_edge.setEnabled(has_image and editing_enabled)
         self.chk_training_auto_next.setEnabled(editing_enabled)
         self.btn_back_to_sobel.setEnabled(editing_enabled)
 
@@ -3152,8 +2932,8 @@ class MainWindow(QMainWindow):
 
         pane_width, pane_height, header_height = 620, 420, 38
         canvas = np.full((pane_height + header_height, pane_width * 2 + 8, 3), 11, dtype=np.uint8)
-        canvas[header_height:, :pane_width] = _letterbox(cropped, pane_width, pane_height)
-        canvas[header_height:, pane_width + 8 :] = _letterbox(edge, pane_width, pane_height)
+        canvas[header_height:, :pane_width] = letterbox(cropped, pane_width, pane_height)
+        canvas[header_height:, pane_width + 8 :] = letterbox(edge, pane_width, pane_height)
         label = self._training_label_for(path) or "UNLABELED"
         metadata = self.settings_image_metadata.get(os.path.normcase(os.path.abspath(path)))
         context = (
@@ -3210,6 +2990,85 @@ class MainWindow(QMainWindow):
             "border-radius:6px; padding:6px 8px; font-weight:800;"
         )
         self._fit_trial_preview()
+
+    def _training_edge_inputs(self, path: str) -> dict:
+        dataset = self.auo_dataset
+        metadata = self.settings_image_metadata.get(self._sobel_record_key(path))
+        if (
+            dataset is None
+            or metadata is None
+            or not metadata.result_file
+            or not metadata.panel_sn
+            or metadata.cut_point < 1
+        ):
+            raise ValueError("Select an image with a matched recipe and cut point first.")
+        if result_files_signature(dataset.result_dir) != dataset.result_snapshot:
+            raise ValueError("Result data changed. Select the data source again.")
+        panels = [p for p in dataset.panels if p.result_file == metadata.result_file]
+        if len(panels) != 1 or not panels[0].product_id or not panels[0].recipe_name:
+            raise ValueError("The image needs one unambiguous product and recipe.")
+        panel = panels[0]
+        recipes = [
+            p
+            for p in Path(dataset.recipe_dir).rglob("*.rcp")
+            if p.name.casefold() == Path(panel.recipe_name).name.casefold()
+        ]
+        if len(recipes) != 1:
+            raise ValueError("The matched recipe file is missing or ambiguous.")
+        return {
+            "product_id": panel.product_id,
+            "recipe_path": recipes[0],
+            "cut_point": metadata.cut_point,
+            "csv_sn": metadata.panel_sn,
+        }
+
+    def _default_edge_manifest(self) -> str:
+        saved = self.edge_review.get("manifest_path", "")
+        if saved:
+            return str(saved)
+        for parent in APP_DIR.parents:
+            candidate = parent / "analysis/training_edge_reference/references.json"
+            if candidate.is_file():
+                return str(candidate)
+        return ""
+
+    def _save_training_edge(self, path: str, review: dict, edge: str) -> None:
+        if self._settings_job_busy() or self.worker is not None or self.auto_running:
+            raise ValueError("Wait for the current inspection or training job to finish.")
+        # Dataset assignment must also remain stable during the review dialog.
+        inputs = self._training_edge_inputs(path)
+        if (
+            inputs["cut_point"] != review["context"]["cut_point"]
+            or inputs["product_id"] != review["context"]["product_id"]
+        ):
+            raise ValueError("Image assignment changed. Reopen edge review.")
+        choices = dict(self.edge_review.get("choices", {}))
+        choices[review["key"]] = selection_record(review, path, edge)
+        updated = {"version": 1, "manifest_path": review["manifest_path"], "choices": choices}
+        self._save_sobel_records(edge_review=updated)
+        self.edge_review = updated
+
+    def _open_training_edge(self, path: str) -> None:
+        if not path or self._settings_job_busy() or self.worker is not None or self.auto_running:
+            return
+        try:
+            inputs = self._training_edge_inputs(path)
+            dialog = TrainingEdgeDialog(
+                path,
+                inputs,
+                self.edge_review.get("choices", {}),
+                self._sobel_from_controls(),
+                self._default_edge_manifest(),
+                self,
+                save_callback=lambda review, edge: self._save_training_edge(path, review, edge),
+            )
+        except (OSError, ValueError, KeyError, TypeError, cv2.error) as exc:
+            QMessageBox.warning(self, "PCB edge review unavailable", str(exc))
+            return
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _open_reference_measurement(self) -> None:
         if self._settings_job_busy() or self.worker is not None or self.auto_running:
@@ -3275,7 +3134,7 @@ class MainWindow(QMainWindow):
         start = self.settings_image_dir if self.settings_image_dir else self.cfg.picture_dir
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select image path",
+            "Select Sep.Net, SepData, Picture or their parent folder",
             start,
         )
         if directory:
@@ -3400,11 +3259,6 @@ class MainWindow(QMainWindow):
         )
         label = self._training_label_for(self.settings_image_path) or "UNLABELED"
         save_state = "SAVED" if saved else "NOT SAVED"
-        self.lbl_sobel_label.setText(f"LABEL: {label}  |  {save_state}")
-        self.lbl_sobel_label.setToolTip(
-            "The label belongs to this image. NOT SAVED means the current image preparation "
-            "does not match a saved Sobel image; save GOOD or NG again to use these settings."
-        )
         for button, button_label in ((self.btn_sobel_good, "GOOD"), (self.btn_sobel_ng, "NG")):
             button.setText(
                 f"SAVED AS {button_label}"
@@ -3605,8 +3459,8 @@ class MainWindow(QMainWindow):
 
         pane_width, pane_height, header_height = 560, 520, 28
         canvas = np.full((pane_height + header_height, pane_width * 2 + 8, 3), 11, dtype=np.uint8)
-        canvas[header_height:, :pane_width] = _letterbox(cropped, pane_width, pane_height)
-        canvas[header_height:, pane_width + 8 :] = _letterbox(edge, pane_width, pane_height)
+        canvas[header_height:, :pane_width] = letterbox(cropped, pane_width, pane_height)
+        canvas[header_height:, pane_width + 8 :] = letterbox(edge, pane_width, pane_height)
         cv2.putText(
             canvas,
             "ORIGINAL",
@@ -3826,11 +3680,18 @@ class MainWindow(QMainWindow):
             )
             return False
         sobel = self._sobel_from_controls()
-        source_runs = [
-            run
-            for day in available_days(dataset.result_dir)
-            for run in load_runs(dataset.result_dir, day)
-        ]
+        try:
+            source_runs = [
+                run
+                for day in available_days(dataset.result_dir)
+                for run in load_runs(dataset.result_dir, day)
+            ]
+            if self.trial_input_signature != self._trial_signature():
+                raise OSError("Test inputs changed while reading Result data.")
+        except OSError as exc:
+            self._invalidate_settings_trial()
+            self.lbl_trial_result.setText(f"SETTINGS NOT SAVED: {exc}")
+            return False
         expected = dict(self.cfg.expected_images_by_route)
         for run in source_runs:
             expected[run.key] = dataset.expected_cut_points
@@ -3854,13 +3715,17 @@ class MainWindow(QMainWindow):
             good_confidence_min=self.spin_confidence.value() / 100.0,
         )
         try:
+            check_write_target(CONFIG_PATH, self._settings_protected_roots())
             candidate.save(CONFIG_PATH)
         except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.critical(self, "Settings not saved", str(exc))
             return False
         self.cfg = candidate
         self.link.fault("Settings changed; press ACK / RESET before inspection")
-        self._load_dataset(dataset)
+        if not self._load_dataset(dataset):
+            self._invalidate_settings_trial()
+            self.lbl_trial_result.setText("SETTINGS SAVED; DATA RELOAD FAILED - HOLD")
+            return False
         self.lbl_trial_result.setStyleSheet(
             "background:#dbeafe; color:#1d4ed8; border-radius:7px; padding:10px; font-weight:800;"
         )
@@ -3935,7 +3800,11 @@ class MainWindow(QMainWindow):
         try:
             if self.trial_input_signature != self._trial_signature():
                 raise ValueError("Test inputs changed. Run the model test again.")
-            if not results or [item[0] for item in results] != self.settings_image_paths:
+            if (
+                not results
+                or any(not isinstance(item, (tuple, list)) or len(item) != 3 for item in results)
+                or [item[0] for item in results] != self.settings_image_paths
+            ):
                 raise ValueError("The model returned an incomplete or mismatched image set.")
             for _, label, confidence in results:
                 if (
@@ -4094,6 +3963,18 @@ class MainWindow(QMainWindow):
                 Qt.SmoothTransformation,
             )
         )
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Resize:
+            if watched is self.lbl_settings_preview:
+                self._fit_settings_preview()
+            elif watched is self.trial_preview_scroll.viewport():
+                self._fit_trial_preview()
+            elif watched is self.vision_workspace:
+                QTimer.singleShot(0, self._layout_vision_workspace)
+            elif watched is self.image:
+                self._fit_image()
+        return super().eventFilter(watched, event)
 
     def _fit_settings_preview(self) -> None:
         if self.settings_preview_pixmap is None:
