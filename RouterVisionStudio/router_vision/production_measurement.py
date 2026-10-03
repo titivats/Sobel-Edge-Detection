@@ -11,13 +11,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .capture_index import CaptureReferences as CaptureReferences
 from .image_edge import ALGORITHM_VERSION
-from .machine_reference import load_manifest, sha256
+from .machine_reference import sha256
 from .production import STATUS_FAULT, STATUS_GOOD, STATUS_NG, classify_panel
-from .recipe_spec_ui import validated_limits
+from .spec import validated_limits
 from .training_edge import (
     confirmation_matches,
-    load_edge_review,
     measure_image_edge,
     saved_edge,
 )
@@ -27,66 +27,6 @@ def file_fingerprint(paths):
     files = {str(Path(p).resolve()): sha256(p) for p in paths}
     signature = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     return signature, files
-
-
-class CaptureReferences:
-    """Load fresh, immutable capture records; never copy a prior board's geometry."""
-
-    def __init__(self, location):
-        self.location = Path(location) if location else None
-
-    def paths(self):
-        if self.location is None:
-            return []
-        return sorted(self.location.glob("*.json")) if self.location.is_dir() else [self.location]
-
-    def review(self, path, run, recipe, index):
-        candidates = []
-        # Inspect identity first; unrelated or superseded manifests cannot mask a valid capture.
-        for manifest_path in self.paths():
-            try:
-                raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-                matches = [
-                    record
-                    for record in raw.get("images", [])
-                    if record.get("name") == Path(path).name
-                    and str(record.get("csv_sn")) == run.sn
-                    and record.get("cut_point") == index
-                    and record.get("reference_context", {}).get("product_id") == run.product_id
-                    and (
-                        not run.table
-                        or record.get("reference_context", {}).get("table", "").strip() == run.table
-                    )
-                    and record.get("result_file", run.result_file) == run.result_file
-                ]
-                if matches:
-                    candidates.append(manifest_path)
-            except (OSError, ValueError, AttributeError, TypeError):
-                continue
-        if len(candidates) != 1:
-            raise ValueError(
-                f"Cut {index}: needs exactly one matching capture record (found {len(candidates)})."
-            )
-        review = load_edge_review(
-            candidates[0],
-            path,
-            product_id=run.product_id,
-            recipe_path=recipe,
-            cut_point=index,
-            csv_sn=run.sn,
-        )
-        # load_manifest validates every source. Pin those sources for the final recheck too.
-        manifest = load_manifest(candidates[0])
-        if manifest["manifest_sha256"] != review["manifest_sha256"]:
-            raise ValueError("Capture record changed while loading its geometry.")
-        review["source_paths"] = [s["path"] for s in manifest["source_files"]] + [
-            str(candidates[0])
-        ]
-        review["source_hashes"] = {
-            str(Path(s["path"]).resolve()): s["sha256"] for s in manifest["source_files"]
-        }
-        review["source_hashes"][str(candidates[0].resolve())] = manifest["manifest_sha256"]
-        return review
 
 
 def approved_side(state, review):
@@ -134,6 +74,7 @@ def inspect_with_spec(
         except (ValueError, AttributeError) as exc:
             result.status, result.note = STATUS_FAULT, f"SPEC unavailable for {run.key}: {exc}"
         else:
+            references.refresh()
             for index, path in enumerate(run.pictures, 1):
                 if cancelled and cancelled():
                     raise InterruptedError("Inspection cancelled")

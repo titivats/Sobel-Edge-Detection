@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .machine import Run
-from .model import CutClassifier
+
+if TYPE_CHECKING:
+    from .model import CutClassifier
 
 STATUS_GOOD = "GOOD"
 STATUS_NG = "NG"

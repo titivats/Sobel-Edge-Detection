@@ -15,19 +15,13 @@ so a single sweep assigns every picture.
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-
-# Column positions in the run result CSV
-COL_SN, COL_ID, COL_BARCODE, COL_PRODUCT = 0, 1, 2, 3
-COL_TABLE, COL_RECIPE, COL_RESULT = 4, 5, 6
-COL_OFFSET_X, COL_OFFSET_Y, COL_ROTATE = 7, 8, 9
-COL_START, COL_TACT, COL_OPERATOR = 10, 11, 12
-COL_LENGTH, COL_WIDTH, COL_CONVEYOR, COL_CUTTING = 13, 14, 15, 16
-COL_MESSAGE, COL_MACHINE, COL_SUBBOARDS, COL_END = 17, 18, 19, 20
-MIN_COLUMNS = 22
 
 PICTURE_STAMP = "%Y%m%d_%H%M%S"
 
@@ -50,6 +44,8 @@ class Run:
     sub_boards: str
     message: str
     pictures: list[str] = field(default_factory=list)
+    source_path: str = ""
+    source_sha256: str = ""
 
     @property
     def key(self) -> str:
@@ -114,6 +110,75 @@ def available_days(result_dir: str | Path) -> list[str]:
     return sorted(days)
 
 
+def read_run(path: str | Path, *, strict: bool = False) -> Run | None:
+    """Parse one Result file; production callers reject malformed panel metadata."""
+    path = Path(path)
+    raw = path.read_bytes()
+    rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    panels = [row for row in rows if (row.get("SN") or "").strip()]
+    if not panels:
+        if strict:
+            raise ValueError(f"Result has no panel row: {path.name}")
+        return None
+    row = panels[0]
+    product = (row.get("ProductId") or "").strip()
+    recipe = (row.get("Recipe_Name") or "").strip()
+    if not product:
+        if strict:
+            raise ValueError(f"Result ProductId is missing: {path.name}")
+        return None
+    raw_result = (row.get("Result") or "").strip().casefold()
+    if strict:
+        if len(panels) != 1 or not recipe or raw_result not in {"true", "false"}:
+            raise ValueError(f"Result panel identity / recipe / result is ambiguous: {path.name}")
+        for field_name in ("OffsetX", "OffsetY", "RotateAngle", "BitDiameter", "CuttingTime"):
+            value = row.get(field_name)
+            if value not in (None, ""):
+                parsed = float(value)
+                if not math.isfinite(parsed) or (
+                    field_name in {"BitDiameter", "CuttingTime"} and parsed < 0
+                ):
+                    raise ValueError(f"Result {field_name} is invalid: {path.name}")
+        for field_name in ("Start_time", "End_time"):
+            if row.get(field_name) and _parse_dt(row[field_name]) is None:
+                raise ValueError(f"Result {field_name} is invalid: {path.name}")
+    start, end = _parse_dt(row.get("Start_time")), _parse_dt(row.get("End_time"))
+    if start is None:
+        try:
+            end = datetime.strptime(path.stem.lstrip("_"), PICTURE_STAMP)
+        except ValueError:
+            if strict:
+                raise ValueError(f"Result completion time is missing: {path.name}") from None
+            return None
+        cutting = max(0.0, _parse_float(row.get("CuttingTime")))
+        start = end - timedelta(seconds=max(120.0, cutting + 30.0))
+    elif end is None:
+        if strict:
+            raise ValueError(f"Result End_time is missing: {path.name}")
+        end = start + timedelta(seconds=120)
+    if strict and end < start:
+        raise ValueError(f"Result ends before it starts: {path.name}")
+    return Run(
+        result_file=path.name,
+        sn=(row.get("SN") or "").strip(),
+        run_id=(row.get("ID") or path.stem).strip(),
+        product_id=product,
+        table=(row.get("CutedTable") or row.get("Table") or "").strip(),
+        recipe=recipe,
+        passed=raw_result == "true",
+        offset_x=_parse_float(row.get("OffsetX")),
+        offset_y=_parse_float(row.get("OffsetY")),
+        rotate_angle=_parse_float(row.get("RotateAngle")),
+        start=start,
+        end=end,
+        tact_time=row.get("Tact_time") or row.get("CuttingTime") or "",
+        sub_boards=row.get("SubBoardCount") or "",
+        message=(row.get("Message") or "").strip(),
+        source_path=str(path.resolve()),
+        source_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
 def load_runs(result_dir: str | Path, day: str) -> list[Run]:
     """Read every run result for one day, in start order.
 
@@ -129,66 +194,11 @@ def load_runs(result_dir: str | Path, day: str) -> list[Run]:
             if not entry.name.startswith(prefix) or not entry.name.lower().endswith(".csv"):
                 continue
             try:
-                with open(
-                    entry.path,
-                    "r",
-                    encoding="utf-8-sig",
-                    errors="replace",
-                    newline="",
-                ) as fh:
-                    rows = csv.DictReader(fh)
-                    row = next(
-                        (item for item in rows if (item.get("SN") or "").strip()),
-                        None,
-                    )
-            except (OSError, csv.Error):
+                run = read_run(entry.path)
+            except (OSError, ValueError, csv.Error):
                 continue
-            if not row:
-                continue
-
-            product_id = (row.get("ProductId") or "").strip()
-            if not product_id:
-                continue
-
-            start = _parse_dt(row.get("Start_time") or "")
-            end = _parse_dt(row.get("End_time") or "")
-            if start is None:
-                try:
-                    completed_at = datetime.strptime(
-                        Path(entry.name).stem.lstrip("_"), PICTURE_STAMP
-                    )
-                except ValueError:
-                    continue
-                cutting_seconds = max(0.0, _parse_float(row.get("CuttingTime")))
-                # New-format result files are written after the last picture.
-                # A 30-second lead-in covers positioning/camera acquisition that
-                # is not included in the router's CuttingTime field.
-                end = completed_at
-                start = completed_at - timedelta(seconds=max(120.0, cutting_seconds + 30.0))
-            elif end is None:
-                end = start + timedelta(seconds=120)
-
-            raw_result = (row.get("Result") or "").strip().casefold()
-            table = (row.get("CutedTable") or row.get("Table") or "").strip()
-            runs.append(
-                Run(
-                    result_file=entry.name,
-                    sn=(row.get("SN") or "").strip(),
-                    run_id=(row.get("ID") or Path(entry.name).stem).strip(),
-                    product_id=product_id,
-                    table=table,
-                    recipe=(row.get("Recipe_Name") or "").strip(),
-                    passed=raw_result == "true",
-                    offset_x=_parse_float(row.get("OffsetX")),
-                    offset_y=_parse_float(row.get("OffsetY")),
-                    rotate_angle=_parse_float(row.get("RotateAngle")),
-                    start=start,
-                    end=end,
-                    tact_time=(row.get("Tact_time") or row.get("CuttingTime") or ""),
-                    sub_boards=(row.get("SubBoardCount") or ""),
-                    message=(row.get("Message") or "").strip(),
-                )
-            )
+            if run is not None:
+                runs.append(run)
     runs.sort(key=lambda r: r.start)
     return runs
 

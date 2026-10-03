@@ -102,7 +102,7 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertEqual(RECENT_RESULT_LIMIT, 5)
         self.assertEqual(STATE_TEXT[GateState.PASS], "GOOD")
         self.assertEqual(STATE_TEXT[GateState.NG], "NG")
-        self.assertEqual(STATE_TEXT[GateState.FAULT], "NG")
+        self.assertEqual(STATE_TEXT[GateState.FAULT], "FAULT / HOLD")
         self.assertNotIn("RELEASE / HOLD REASON", source)
         self.assertNotIn("lbl_state_reason", source)
         self.assertNotIn("lbl_release_big", source)
@@ -188,7 +188,10 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn('QPushButton("NG — SAVE & NEXT")', source)
         self.assertIn('QPushButton("START TRAIN THE MODEL")', source)
         self.assertIn("MIN_TRAINING_IMAGES_PER_CLASS = 5", source)
-        self.assertIn("class ModelTrainingWorker", source)
+        self.assertIn("ModelTrainingWorker", source)
+        from production_app import ModelTrainingWorker
+
+        self.assertEqual(ModelTrainingWorker.__module__, "router_vision.workers")
         self.assertIn("def _train_settings_model", source)
         self.assertIn("model_file_name(product)", source)
         self.assertIn(

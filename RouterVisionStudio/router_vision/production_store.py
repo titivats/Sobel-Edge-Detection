@@ -58,11 +58,23 @@ class ProductionStore:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, panel_key TEXT NOT NULL, signature TEXT NOT NULL, completed_at TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, overview TEXT)"
             )
+            db.execute("CREATE INDEX IF NOT EXISTS panels_route_state ON panels(route,state)")
+
+    def states(self, route):
+        """Read the route's claims in one transaction instead of opening a DB per board."""
+        with self.connect() as db:
+            return {
+                key: (state, signature)
+                for key, state, signature in db.execute(
+                    "SELECT panel_key,state,signature FROM panels WHERE route=?", (route,)
+                )
+            }
 
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=5)
         try:
+            db.execute("PRAGMA synchronous=FULL")
             with db:
                 yield db
         finally:
@@ -102,10 +114,15 @@ class ProductionStore:
             self.owned_claims[key] = claim_id
 
     def finish(self, key, result, evidence, overview=""):
+        if result.status not in {"GOOD", "NG", "FAULT"}:
+            raise ValueError("Invalid production decision status.")
         payload = json.dumps(
             json_safe({"result": result, "evidence": evidence}), allow_nan=False, ensure_ascii=False
         )
         with self.connect() as db:
+            row = db.execute("SELECT route FROM panels WHERE panel_key=?", (key,)).fetchone()
+            if row is None or row[0] != result.run.key:
+                raise ValueError("Result route differs from the claimed board.")
             changed = db.execute(
                 "UPDATE panels SET state='DONE',completed_at=?,status=?,payload=?,overview=? "
                 "WHERE panel_key=? AND state='PENDING' AND claim_id=?",
@@ -193,7 +210,7 @@ class ProductionStore:
         with self.connect() as db:
             rows = db.execute(
                 "SELECT payload,overview,completed_at FROM attempts WHERE overview IS NOT NULL "
-                "ORDER BY completed_at DESC LIMIT ?",
+                "ORDER BY id DESC LIMIT ?",
                 (count,),
             ).fetchall()
         return [(json.loads(p), overview, completed) for p, overview, completed in rows]

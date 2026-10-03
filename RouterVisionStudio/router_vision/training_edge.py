@@ -241,9 +241,11 @@ def context_key(context):
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def load_edge_review(manifest_path, image_path, *, product_id, recipe_path, cut_point, csv_sn):
+def load_edge_review(
+    manifest_path, image_path, *, product_id, recipe_path, cut_point, csv_sn, manifest=None
+):
     """Bind the displayed tangents to this image, recipe version and program."""
-    manifest = load_manifest(manifest_path)
+    manifest = load_manifest(manifest_path) if manifest is None else manifest
     a = reference_for_image(manifest, image_path, "A")
     b = reference_for_image(manifest, image_path, "B")
     record = next(r for r in manifest["images"] if r["name"] == Path(image_path).name)

@@ -19,6 +19,12 @@ and training a DINOv2-based GOOD / NG classifier. The production UI is in Englis
   for the next board instead of stopping at the end of the loaded queue. SQLite claims
   prevent duplicate processing across restarts. Results and images are stored in the app's
   `production_results.sqlite` and `production_evidence` folder, outside machine data.
+  Live image assignment uses capture SN/cut identities instead of acquisition-gap guesses.
+  Unchanged Result/capture files are indexed without repeated parsing. Missing or unstable
+  images time out; interrupted claims still block when their source files have disappeared.
+  Source hashes are checked again when evidence is recorded. A result arriving after HOLD
+  is recorded as FAULT, and only one app instance can use a runtime configuration.
+  FAULT is displayed as **FAULT / HOLD**, separately from a measured/classified NG.
 - Full HD (1920×1080) layout, maximized on launch, with previews fitted to the available space.
 - Stable Sobel preview scale when navigating images or resizing the workspace.
 - Shared image labels and preparation settings between **2 SOBEL TUNING** and **3 TRAIN IMAGES**.
@@ -192,7 +198,13 @@ Reference provenance retains `production_reference_verified=false`.
 
 ## Validation
 
-The 2026-10-03 release check passed **250 tests**, Ruff lint and formatting checks.
+The 2026-10-03 resilience revision adds interrupted/late results, malformed configuration,
+changing source files, duplicate identities, Unicode paths and a 100-board synthetic soak.
+All **277 tests** passed, along with repository-wide Ruff lint and formatting checks.
+The soak runs real Sobel measurements and SQLite recording with a classifier stub,
+including 90 GOOD and 10 SPEC NG results, without duplicate attempts.
+An intake-only benchmark with 2,001 synthetic Result files reduced median polling time
+from 803 ms to 153 ms; this is not real-machine throughput or neural inference performance.
 Runtime configuration, trained models, production SQLite files and evidence images
 remain excluded from Git.
 
@@ -226,16 +238,23 @@ Layout checks cover 1920×1080, 1920×1040, 1536×864 and smaller-window behavio
 Qt tests use offscreen rendering; they do not certify physical measurement accuracy or model
 performance on unseen production boards.
 
-The separate local dataset audit found 32 images across two panels of 16 cuts, with no unassigned
-images. Labels were GOOD 15 / NG 17; 31 images matched the inspected preparation settings.
-One NG image had different saved Sobel/crop settings. The existing local checkpoint was rejected
-for missing ProductId identity. Stored training flags do not establish a valid trained model.
+The earlier local dataset audit found 32 images across two panels of 16 cuts and rejected
+an old checkpoint without identity. The 2026-10-03 local checkpoint check passed identity
+and report quality gates, with 80% accuracy on five validation images. This small validation
+set does not establish performance on unseen production boards. Stored training flags alone
+do not establish a valid trained model.
 All 64 A/B reference checks passed, without changing the unverified calibration status.
 These local data and model files are not included in this repository.
 
 ## Repository map
 
 - `RouterVisionStudio/production_app.py`: desktop application and workflow.
+- `router_vision/workers.py`: intake, inspection, trial and training workers.
+- `router_vision/capture_index.py`, `capture_records.py`: indexed capture identities and geometry validation.
+- `router_vision/live_source.py`: stable-file intake and recovery checks.
+- `router_vision/production_measurement.py`, `spec.py`: classifier/Sobel/SPEC decision stages.
+- `router_vision/production_store.py`, `production_evidence.py`: claims, durable history and evidence.
+- `router_vision/images.py`: common image loading, including Windows Unicode paths.
 - `RouterVisionStudio/router_vision/`: source import, preprocessing, model, reference and UI modules.
 - `RouterVisionStudio/tests/`: automated tests using temporary/synthetic data.
 - `RouterVisionStudio/config.example.json`: configuration fields and example paths.
@@ -243,3 +262,40 @@ These local data and model files are not included in this repository.
 
 Machine exports, images, recipes, checkpoints, local labels and workflow JSON remain local.
 This README replaces the older separate project/operations/measurement documents.
+The obsolete `app.py` dashboard and its exclusive baseline/green-mask modules were removed.
+The documented offline CLI remains separate from the AVTR production gate. Importing the
+package no longer initializes PyTorch or the UI until those components are requested.
+
+## Sep.Net and SepData inputs
+
+The 2026-10-03 check of the supplied AUO6000 export confirmed folder discovery and
+Sobel decoding for all 32 images. None matched its Result records: images were captured
+on 2026-09-03, while Result filenames ended on 2026-05-16. Its Result archive contained
+nine ProductIds and no supported capture JSON was found in SepData. This export needs
+matching Result records, an unambiguous product and per-cut capture data before use in
+the complete training/AUTO workflow. Its Eqp.cfg pixel scale also differs from the local
+app configuration; this check did not verify physical calibration or change either value.
+
+| Location | Required by AVTR |
+| --- | --- |
+| `SepData/Picture` | Original camera images. |
+| `SepData/Result` | Matching panel CSV with SN, recipe and offsets; timestamps must correspond to the images. |
+| `SepData/Recipe` | Captured `*.rcp` version, bound by content hash. |
+| `SepData/Config/Eqp.cfg` | Source setup: camera pixel scales and picture-save flags. |
+| `SepData/Database/ProcessReport.db` | Current historical reference and cross-checks; not queried by fresh capture records. |
+| `SepData/Log` | Logs pinned by the current historical manifest; acquisition/alignment audits. |
+| `SepData/Temp` | Historical Eqp snapshots pinned by the current manifest. |
+| `Sep.Net/MC88X_Log` | Optional historical controller-motion audit. |
+
+The supplied manifest currently pins `Sep_Debug_20260903.log` and
+`Temp/20260903/TempEqp20260903T110944.0391436.cfg` as well as the database and local
+recipe/Result files. Removing them invalidates that reference. New-board inspection
+also requires immutable capture JSON with the geometry described above; current Eqp.cfg
+or changing whole logs/databases do not provide a per-image camera position by themselves.
+
+AVTR does not import the Sep.Net executable/DLL/language resources or SepData's EcoSmart,
+LayoutScan, Sep_CMD and WorkSataeFolder data. Other database/config/license files belong
+to the machine. Absence of an AVTR dependency is not permission to delete machine files.
+Keep historical originals separate from the active daily export so an unlimited archive
+does not have to be listed on each poll. Config, models, SQLite and evidence belong outside
+machine-owned folders; the write guard protects the complete selected SepData export.

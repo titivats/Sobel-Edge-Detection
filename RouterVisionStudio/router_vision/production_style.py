@@ -86,5 +86,5 @@ STATE_TEXT = {
     GateState.INSPECTING: "INSPECTING",
     GateState.PASS: "GOOD",
     GateState.NG: "NG",
-    GateState.FAULT: "NG",
+    GateState.FAULT: "FAULT / HOLD",
 }

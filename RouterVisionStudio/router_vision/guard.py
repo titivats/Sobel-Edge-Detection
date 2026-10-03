@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 # Attributes of AppConfig that point at machine-owned data.
-DATA_DIR_ATTRS = ("picture_dir", "result_dir", "recipe_dir")
+DATA_DIR_ATTRS = ("picture_dir", "result_dir", "recipe_dir", "capture_manifest_dir")
 DATA_FILE_ATTRS = ("eqp_cfg_path",)
 
 
@@ -40,6 +40,15 @@ def protected_roots(cfg) -> list[Path]:
         p = _resolve(getattr(cfg, attr, ""))
         if p:
             roots.append(p)
+            if (
+                p.name.casefold() in {"picture", "result", "recipe"}
+                and (p.parent / "Picture").is_dir()
+                and (p.parent / "Result").is_dir()
+            ):
+                roots.append(p.parent)
+                companion = p.parent.parent / "Sep.Net"
+                if p.parent.name.casefold() == "sepdata" and companion.is_dir():
+                    roots.append(companion)
     for attr in DATA_FILE_ATTRS:
         p = _resolve(getattr(cfg, attr, ""))
         if p:
@@ -60,6 +69,8 @@ def is_protected(target: str | Path, roots: list[Path]) -> Path | None:
 
 def check_write_target(target: str | Path, roots: list[Path]) -> None:
     """Raise ProtectedPathError if writing to `target` would touch machine data."""
+    if _resolve(target) is None:
+        raise ProtectedPathError("Refusing to write to an invalid or empty path.")
     hit = is_protected(target, roots)
     if hit is not None:
         raise ProtectedPathError(

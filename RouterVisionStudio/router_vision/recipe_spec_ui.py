@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,21 +14,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-
-def validated_limits(inner, outer) -> dict[str, float]:
-    result = {}
-    for key, caption, raw in (
-        ("inner_max_mm", "Max Inner", inner),
-        ("outer_max_mm", "Max Outer", outer),
-    ):
-        try:
-            value = float(raw)
-        except (TypeError, ValueError, OverflowError):
-            raise ValueError(f"{caption}: enter a non-negative number in mm.") from None
-        if isinstance(raw, bool) or not math.isfinite(value) or value < 0:
-            raise ValueError(f"{caption}: enter a finite, non-negative number in mm.")
-        result[key] = value
-    return result
+from .spec import validated_limits as validated_limits
 
 
 class RecipeSpecDialog(QDialog):

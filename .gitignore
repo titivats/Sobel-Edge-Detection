@@ -30,6 +30,7 @@ RouterVisionStudio/models/
 RouterVisionStudio/production_results.sqlite
 RouterVisionStudio/production_results.sqlite-*
 RouterVisionStudio/production_evidence/
+RouterVisionStudio/.production.lock
 
 # Credentials, trained weights and proprietary machine files
 .env

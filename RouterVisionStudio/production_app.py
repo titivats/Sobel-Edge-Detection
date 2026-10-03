@@ -17,7 +17,6 @@ import os
 import sqlite3
 import sys
 import time
-import traceback
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -27,7 +26,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QLocale, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QLocale, QLockFile, Qt, QTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -68,6 +67,7 @@ from router_vision.auo6000 import (
 )
 from router_vision.config import DEFAULT_CONFIG_NAME, AppConfig
 from router_vision.guard import ProtectedPathError, check_write_target, protected_roots
+from router_vision.images import read_image
 from router_vision.interlock import GateState, SimulatedConveyorLink, VisionVerdict
 from router_vision.live_source import LivePanel, LiveSource
 from router_vision.machine import Run, attach_pictures, available_days, load_runs
@@ -86,12 +86,10 @@ from router_vision.production import (
     STATUS_NG,
     ImageDecision,
     PanelDecision,
-    classify_panel,
 )
+from router_vision.production_evidence import decision_image, save_image, verify_sources
 from router_vision.production_measurement import (
-    CaptureReferences,
     file_fingerprint,
-    inspect_with_spec,
 )
 from router_vision.production_store import ProductionStore, panel_key
 from router_vision.production_style import APP_STYLE, COLORS, STATE_TEXT
@@ -114,6 +112,18 @@ from router_vision.training_edge import (
     validate_confirmation,
 )
 from router_vision.training_edge_ui import TrainingEdgeDialog
+from router_vision.workers import (
+    InspectionWorker as InspectionWorker,
+)
+from router_vision.workers import (
+    LiveScanWorker,
+)
+from router_vision.workers import (
+    ModelTrainingWorker as ModelTrainingWorker,
+)
+from router_vision.workers import (
+    VisionTrialWorker as VisionTrialWorker,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / DEFAULT_CONFIG_NAME
@@ -176,6 +186,8 @@ class DemoClassifier:
 
 def verdict_for(result: PanelDecision) -> tuple[VisionVerdict, str]:
     """Convert inspection output into the gate's deliberately strict verdict."""
+    if result.status == "FAULT":
+        return VisionVerdict.FAULT, result.note or result.status
     if not result.run.passed:
         return VisionVerdict.NG, result.run.message or "router reported FAIL"
     if result.status == STATUS_GOOD:
@@ -183,180 +195,6 @@ def verdict_for(result: PanelDecision) -> tuple[VisionVerdict, str]:
     if result.status == STATUS_NG:
         return VisionVerdict.NG, result.note or result.status
     return VisionVerdict.FAULT, result.note or result.status
-
-
-class InspectionWorker(QThread):
-    completed = Signal(object, object, float)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        classifier: CutClassifier,
-        run: Run,
-        expected_images: int,
-        good_confidence_min: float,
-        production_context=None,
-    ):
-        super().__init__()
-        self.classifier = classifier
-        self.target_run = run
-        self.expected_images = expected_images
-        self.good_confidence_min = good_confidence_min
-        self.production_context = production_context
-        self.evidence = {}
-
-    def run(self) -> None:
-        started = time.perf_counter()
-        try:
-            if self.production_context is not None:
-                context = self.production_context
-                if context.get("readiness_error"):
-                    result = PanelDecision(run=self.target_run, note=context["readiness_error"])
-                    self.evidence = {"model_stage": "NOT_RUN", "measurement_stage": "NOT_RUN"}
-                else:
-                    result, self.evidence = inspect_with_spec(
-                        self.classifier,
-                        self.target_run,
-                        self.expected_images,
-                        self.good_confidence_min,
-                        context["limits"],
-                        CaptureReferences(context["manifest_location"]),
-                        context["recipe"],
-                        context["edge_state"],
-                        cancelled=self.isInterruptionRequested,
-                    )
-                self.evidence.update(model=context["model"], input_files=context["input_hashes"])
-                if any(sha256(p) != h for p, h in context["input_hashes"].items()):
-                    result.status, result.note = (
-                        "FAULT",
-                        "Panel input files changed during inspection.",
-                    )
-            else:
-                result = classify_panel(
-                    self.classifier,
-                    self.target_run,
-                    self.expected_images,
-                    self.good_confidence_min,
-                    cancelled=self.isInterruptionRequested,
-                )
-            measurement_by_path = {m["path"]: m for m in self.evidence.get("measurements", [])}
-            captions = {}
-            for detail in result.details:
-                measured = measurement_by_path.get(detail.path)
-                if measured:
-                    values = measured.get("measurement", {})
-                    inner, outer = values.get("inner_line_max_mm"), values.get("outer_line_max_mm")
-                    mm_text = (
-                        f"IN {inner:.4f} / OUT {outer:.4f} mm"
-                        if inner is not None and outer is not None
-                        else "MM N/A"
-                    )
-                    captions[detail.path] = (
-                        f"CUT {detail.index + 1:02d} | {mm_text} | SPEC {measured['status']} | "
-                    )
-            overview = render_prediction_overview(
-                self.classifier,
-                result,
-                self.good_confidence_min,
-                tile_context=captions or None,
-                tile_verdicts={path: entry["status"] for path, entry in measurement_by_path.items()}
-                or None,
-            )
-        except Exception:
-            self.failed.emit(traceback.format_exc(limit=6))
-            return
-        self.completed.emit(result, overview, (time.perf_counter() - started) * 1000.0)
-
-
-class LiveScanWorker(QThread):
-    completed = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, source, route, expected):
-        super().__init__()
-        self.source, self.route, self.expected = source, route, expected
-
-    def run(self):
-        try:
-            panels = self.source.poll(self.route, self.expected)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-        else:
-            self.completed.emit(panels)
-
-
-class VisionTrialWorker(QThread):
-    completed = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, classifier, image_paths: list[str]):
-        super().__init__()
-        self.classifier = classifier
-        self.image_paths = list(image_paths)
-
-    def run(self) -> None:
-        try:
-            predictions = self.classifier.predict(
-                self.image_paths, cancelled=self.isInterruptionRequested
-            )
-            if len(predictions) != len(self.image_paths):
-                raise RuntimeError("Vision Transformer returned an incomplete batch result.")
-            results = []
-            for image_path, prediction in zip(self.image_paths, predictions):
-                label, confidence = prediction
-                if not label:
-                    raise RuntimeError(
-                        f"Vision Transformer could not read {Path(image_path).name}."
-                    )
-                results.append((image_path, str(label), float(confidence)))
-            self.completed.emit(results)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class ModelTrainingWorker(QThread):
-    """Train a product-only Sobel ViT model without blocking the settings UI."""
-
-    completed = Signal(object, object)
-    progress_changed = Signal(int, int, str)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        items: list[tuple[str, str]],
-        sobel: SobelConfig,
-        resume_from: CutClassifier | None = None,
-        epochs: int = 300,
-    ):
-        super().__init__()
-        self.items = list(items)
-        self.sobel = sobel
-        self.resume_from = resume_from
-        self.epochs = epochs
-
-    def run(self) -> None:
-        try:
-            previous = self.resume_from
-            classifier = CutClassifier(
-                backbone=previous.backbone if previous is not None else "dinov2_vits14",
-                crop=previous.crop if previous is not None else CropBox(),
-                sobel=self.sobel,
-            )
-            report = classifier.train(
-                self.items,
-                epochs=self.epochs,
-                val_fraction=0.25,
-                progress=self.progress_changed.emit,
-                cancelled=self.isInterruptionRequested,
-                # Always validate a fresh head. Reusing a prior head can leak
-                # the new validation images through an older training run.
-                resume_from=None,
-            )
-            if set(classifier.classes) != {"GOOD", "NG"}:
-                raise RuntimeError("Training must contain both GOOD and NG classes.")
-            self.completed.emit(classifier, report)
-        except Exception as exc:
-            self.failed.emit(str(exc))
 
 
 class ResultImageDialog(QDialog):
@@ -451,6 +289,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
 
         self.cfg = AppConfig.load(CONFIG_PATH)
+        lock_path = CONFIG_PATH.with_name(".production.lock")
+        check_write_target(lock_path, protected_roots(self.cfg))
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self.instance_lock = QLockFile(str(lock_path))
+        self.instance_lock.setStaleLockTime(0)
+        if not self.instance_lock.tryLock(0):
+            raise ValueError(
+                "Another AVTR instance is using this configuration. Close it before opening another."
+            )
         self.link = SimulatedConveyorLink()
         self.link.connect()
         self.classifier: CutClassifier | None = None
@@ -482,6 +329,9 @@ class MainWindow(QMainWindow):
         self.training_last_message = ""
         self.training_last_success: bool | None = None
         self.auto_running = False
+        self.auto_timer = QTimer(self)
+        self.auto_timer.setSingleShot(True)
+        self.auto_timer.timeout.connect(self._auto_tick)
         self.image_pixmap: QPixmap | None = None
         self.settings_preview_pixmap: QPixmap | None = None
         self.trial_preview_pixmap: QPixmap | None = None
@@ -515,7 +365,9 @@ class MainWindow(QMainWindow):
             )
         except (OSError, ValueError, sqlite3.Error, ProtectedPathError) as exc:
             self.link.fault(f"Production history unavailable: {exc}")
-        if CONFIG_PATH.is_file():
+        if getattr(self.cfg, "load_error", ""):
+            self.link.fault(self.cfg.load_error)
+        elif CONFIG_PATH.is_file():
             self._load_dataset()
         else:
             self.link.fault("Select a data source in SETTING before inspection")
@@ -523,10 +375,6 @@ class MainWindow(QMainWindow):
         self.heartbeat_timer = QTimer(self)
         self.heartbeat_timer.timeout.connect(self._heartbeat)
         self.heartbeat_timer.start(500)
-        self.auto_timer = QTimer(self)
-        self.auto_timer.setSingleShot(True)
-        self.auto_timer.timeout.connect(self._auto_tick)
-
         if DEMO_MODE:
             self.spin_interval.setValue(4.0)
             self.lbl_detail.setText(
@@ -2052,8 +1900,12 @@ class MainWindow(QMainWindow):
         production_context = None
         if not DEMO_MODE:
             try:
+                if getattr(self.cfg, "load_error", ""):
+                    raise ValueError(self.cfg.load_error)
+                self.cfg.validate()
                 if self.production_store is None:
                     raise ValueError("Durable production history is unavailable.")
+                check_write_target(self.production_store.path, protected_roots(self.cfg))
                 if (
                     not self.active_model_path
                     or sha256(self.active_model_path) != self.active_model_sha256
@@ -2091,6 +1943,9 @@ class MainWindow(QMainWindow):
                         str(self.active_model_path.resolve()): self.active_model_sha256,
                     },
                     "readiness_error": live_panel.readiness_error,
+                    "references": self.live_source.references
+                    if self.live_source is not None and self.live_scan_worker is not None
+                    else None,
                 }
                 self.production_store.claim(live_panel.key, run.key, live_panel.signature)
                 self.active_claim = live_panel.key
@@ -2121,7 +1976,24 @@ class MainWindow(QMainWindow):
     def _inspection_done(
         self, result: PanelDecision, overview: np.ndarray, elapsed_ms: float
     ) -> None:
+        if self.link.state is not GateState.INSPECTING or self.link.active_panel != panel_id(
+            result.run
+        ):
+            result.status, result.note = (
+                "FAULT",
+                "Inspection finished after HOLD / disconnect or for a different board.",
+            )
+            self.auto_running = False
+            self.auto_timer.stop()
+            self.btn_auto.setText("▶ START AUTO")
         self.current_result = result
+        try:
+            verify_sources(self.worker.evidence)
+        except (OSError, ValueError) as exc:
+            result.status, result.note = "FAULT", str(exc)
+            self.worker.evidence["source_conflict"] = str(exc)
+        raw_overview = overview
+        overview = decision_image(overview, result.status, result.note)
         if self.active_claim is not None:
             try:
                 evidence = deepcopy(self.worker.evidence)
@@ -2131,17 +2003,15 @@ class MainWindow(QMainWindow):
                     / "production_evidence"
                     / f"{self.active_claim}_{uuid.uuid4().hex}.png"
                 )
-                check_write_target(output, protected_roots(self.cfg))
-                output.parent.mkdir(parents=True, exist_ok=True)
-                encoded_ok, encoded = cv2.imencode(".png", overview)
-                if not encoded_ok:
-                    raise OSError("Cannot encode production evidence.")
-                temporary = output.with_suffix(".tmp")
+                save_image(output, overview, self.cfg)
                 try:
-                    encoded.tofile(temporary)
-                    temporary.replace(output)
-                finally:
-                    temporary.unlink(missing_ok=True)
+                    verify_sources(evidence)
+                except (OSError, ValueError) as exc:
+                    result.status, result.note = "FAULT", str(exc)
+                    evidence["source_conflict"] = str(exc)
+                    overview = decision_image(raw_overview, result.status, result.note)
+                    save_image(output, overview, self.cfg)
+                evidence["final_status"] = result.status
                 self.production_store.finish(self.active_claim, result, evidence, str(output))
                 self.active_claim = None
             except Exception as exc:
@@ -2262,6 +2132,18 @@ class MainWindow(QMainWindow):
         if not DEMO_MODE and self.production_store is None:
             self._software_hold("Durable production history is unavailable.")
             return
+        try:
+            if getattr(self.cfg, "load_error", ""):
+                raise ValueError(self.cfg.load_error)
+            self.cfg.validate()
+        except ValueError as exc:
+            self._software_hold(str(exc))
+            return
+        location = self.cfg.capture_manifest_dir or self._default_edge_manifest()
+        if self.live_source is not None and self.live_source.references is not None:
+            prior = self.live_source.references.location
+            if (Path(location).resolve() if location else None) != prior:
+                self.live_source = None
         if self.classifier is None:
             self.link.fault(self.model_error or "no valid Sobel model; automatic mode refused")
             self._refresh_gate()
@@ -2317,10 +2199,17 @@ class MainWindow(QMainWindow):
         return bool(
             worker is not None
             and worker.route == self.cmb_recipe.currentText()
+            and worker.source.references is not None
+            and worker.source.references.location
+            == (
+                Path(self.cfg.capture_manifest_dir or self._default_edge_manifest()).resolve()
+                if (self.cfg.capture_manifest_dir or self._default_edge_manifest())
+                else None
+            )
             and all(
                 Path(getattr(worker.source.cfg, name)).resolve()
                 == Path(getattr(self.cfg, name)).resolve()
-                for name in ("picture_dir", "result_dir", "recipe_dir")
+                for name in ("picture_dir", "result_dir", "recipe_dir", "capture_manifest_dir")
             )
         )
 
@@ -2350,6 +2239,8 @@ class MainWindow(QMainWindow):
     def _software_hold(self, reason: str = "STOP / HOLD pressed by operator") -> None:
         self.auto_running = False
         self.auto_timer.stop()
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.requestInterruption()
         self.btn_auto.setText("▶ START AUTO")
         self.link.fault(reason)
         self.cmb_recipe.setEnabled(True)
@@ -3317,7 +3208,7 @@ class MainWindow(QMainWindow):
             return
         if self._show_selected_trial_prediction(path):
             return
-        original = cv2.imread(path, cv2.IMREAD_COLOR)
+        original = read_image(path, cv2.IMREAD_COLOR)
         if original is None:
             self.trial_preview_pixmap = None
             self.lbl_trial_preview.setText("IMAGE COULD NOT BE READ")
@@ -3901,7 +3792,7 @@ class MainWindow(QMainWindow):
         if not path or not Path(path).is_file():
             self.lbl_trial_result.setText("SELECT A VALID TEST IMAGE")
             return False
-        original = cv2.imread(path, cv2.IMREAD_COLOR)
+        original = read_image(path, cv2.IMREAD_COLOR)
         if original is None:
             self.lbl_trial_result.setText("IMAGE COULD NOT BE READ")
             return False
@@ -4518,6 +4409,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(250, self.close)
             return
+        self.instance_lock.unlock()
         event.accept()
 
 
@@ -4529,7 +4421,11 @@ def main() -> int:
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLE)
-    window = MainWindow()
+    try:
+        window = MainWindow()
+    except (ValueError, ProtectedPathError, OSError) as exc:
+        QMessageBox.critical(None, "AVTR could not start", str(exc))
+        return 1
     window.showMaximized()
     return app.exec()
 

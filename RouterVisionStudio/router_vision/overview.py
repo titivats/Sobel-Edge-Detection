@@ -7,6 +7,7 @@ import math
 import cv2
 import numpy as np
 
+from .images import read_image
 from .production import PanelDecision
 
 
@@ -92,7 +93,7 @@ def render_prediction_overview(
         y0 = gap + row * (cell_height + gap)
         tile = np.full((cell_height, cell_width, 3), 32, dtype=np.uint8)
 
-        original = cv2.imread(str(detail.path), cv2.IMREAD_COLOR)
+        original = read_image(str(detail.path), cv2.IMREAD_COLOR)
         if original is not None:
             original = classifier.crop.apply(original)
         edge = classifier.extractor.edge_map(detail.path, classifier.crop)

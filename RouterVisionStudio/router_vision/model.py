@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 
 from .guard import check_write_target
+from .images import read_image
 
 BACKBONES = {
     "dinov2_vits14": 384,
@@ -375,7 +376,7 @@ class FeatureExtractor:
 
     def edge_map(self, image_path: str | Path, crop: CropBox) -> np.ndarray | None:
         """Return the normalized uint8 Sobel magnitude used by the classifier."""
-        img = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        img = read_image(str(image_path), cv2.IMREAD_COLOR)
         if img is None:
             return None
         img = crop.apply(img)

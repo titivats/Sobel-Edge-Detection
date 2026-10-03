@@ -211,7 +211,7 @@ class LiveProductionTests(unittest.TestCase):
         self.assertEqual(result.status, "FAULT")
 
     def test_capture_replaced_while_loading_cannot_release(self):
-        from router_vision import production_measurement as measurement
+        from router_vision import capture_index as measurement
 
         real_load = measurement.load_edge_review
 
@@ -241,6 +241,8 @@ class LiveProductionTests(unittest.TestCase):
             _show_result_image=Mock(),
             _append_log=Mock(),
         )
+        window.link.state = workflow.ui.GateState.INSPECTING
+        window.link.active_panel = workflow.ui.panel_id(self.run)
         window.production_store.finish.side_effect = OSError("disk full")
         result = PanelDecision(run=self.run, status="GOOD")
         with patch.object(workflow.ui, "CONFIG_PATH", self.root / "config.json"):

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from .spec import validated_limits
+
 DEFAULT_CONFIG_NAME = "config.json"
-DEFAULT_BASELINE_NAME = "baselines.json"
 
 
 @dataclass
@@ -59,7 +61,7 @@ class AppConfig:
     sigma_k: float = 5.0  # also fail at K x the sd measured at calibration (0 = off)
     align_warn_mm: float = 0.15  # OffsetX/Y in the run CSV beyond this raises a warning
 
-    # --- model-only mass-production gate ---------------------------------
+    # --- classifier stage of the production gate --------------------------
     # RELEASE is allowed only when every image is classified GOOD at or above
     # this confidence. Lower-confidence GOOD results fail closed as FAULT/HOLD.
     good_confidence_min: float = 0.95
@@ -92,18 +94,68 @@ class AppConfig:
         if path.exists():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                if not isinstance(raw, dict):
+                    raise ValueError("Configuration must be a JSON object.")
+                known = {f.name for f in fields(cls)}
+                for key, value in raw.items():
+                    if key in known:
+                        if value is None and key in {
+                            "model_dir",
+                            "active_recipe",
+                            "last_edge_spec_route",
+                            "capture_manifest_dir",
+                        }:
+                            value = ""
+                        setattr(cfg, key, value)
+                cfg.validate()
+            except (OSError, ValueError, TypeError) as exc:
+                cfg = cls()
+                cfg.load_error = f"Invalid configuration: {exc}"
                 return cfg
-            known = {f.name for f in fields(cls)}
-            for key, value in raw.items():
-                if key in known:
-                    setattr(cfg, key, value)
         return cfg
+
+    def validate(self) -> None:
+        defaults = type(self)()
+        for item in fields(self):
+            value, default = getattr(self, item.name), getattr(defaults, item.name)
+            if isinstance(default, float):
+                valid = (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                )
+            else:
+                valid = type(value) is type(default)
+            if not valid:
+                raise ValueError(f"Invalid configuration field: {item.name}")
+        if self.pixel_size_mm <= 0 or not 0.5 <= self.good_confidence_min <= 1:
+            raise ValueError("Pixel size must be positive and confidence must be 50% to 100%.")
+        if (
+            self.live_poll_seconds <= 0
+            or self.live_file_stable_seconds < 0
+            or self.live_panel_settle_seconds < 0
+        ):
+            raise ValueError(
+                "Live polling must be positive; stability and settling cannot be negative."
+            )
+        for route, count in self.expected_images_by_route.items():
+            if (
+                not isinstance(route, str)
+                or not route.strip()
+                or type(count) is not int
+                or count < 0
+            ):
+                raise ValueError("Expected cut counts need a route and a non-negative integer.")
+        for route, limits in self.edge_limits_by_route.items():
+            if not isinstance(route, str) or not route.strip() or not isinstance(limits, dict):
+                raise ValueError("Invalid recipe SPEC data.")
+            validated_limits(limits.get("inner_max_mm"), limits.get("outer_max_mm"))
 
     def save(self, path: Path) -> None:
         # never let the app's own settings land inside the machine data
         from .guard import check_write_target, protected_roots
 
+        self.validate()
         check_write_target(path, protected_roots(self))
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -154,7 +206,10 @@ def read_pixel_size(eqp_cfg_path: str | Path) -> tuple[float, float]:
     match = _PIXEL_SIZE_RE.search(path.read_text(encoding="utf-8", errors="replace"))
     if not match:
         raise ValueError("No <PixelSize .../> element found in Eqp.cfg")
-    return float(match.group(1)), float(match.group(2))
+    sizes = float(match.group(1)), float(match.group(2))
+    if any(not math.isfinite(value) or value <= 0 for value in sizes):
+        raise ValueError("PixelSize X/Y must be positive finite numbers.")
+    return sizes
 
 
 def read_machine_flags(eqp_cfg_path: str | Path) -> dict[str, str]:

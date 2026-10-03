@@ -30,9 +30,14 @@ class DecisionTests(unittest.TestCase):
         self.assertIs(verdict, VisionVerdict.FAULT)
 
     def test_router_failure_is_ng(self):
-        verdict, reason = verdict_for(result("FAULT", passed=False))
+        verdict, reason = verdict_for(result("NG", passed=False))
         self.assertIs(verdict, VisionVerdict.NG)
         self.assertEqual(reason, "machine failure")
+
+    def test_data_fault_is_not_hidden_by_router_failure(self):
+        verdict, reason = verdict_for(result("FAULT", passed=False, note="source changed"))
+        self.assertIs(verdict, VisionVerdict.FAULT)
+        self.assertEqual(reason, "source changed")
 
 
 if __name__ == "__main__":

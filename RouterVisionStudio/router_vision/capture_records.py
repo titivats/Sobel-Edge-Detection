@@ -17,7 +17,18 @@ def normalize_captures(data):
         raise ValueError("Capture pixel scales must be positive finite X/Y values.")
     sources = {str(Path(s["path"]).resolve()): s["sha256"] for s in data["source_files"]}
     for record in data["images"]:
+        if type(record.get("cut_point")) is not int or record["cut_point"] <= 0:
+            raise ValueError("Capture cut point must be a positive integer.")
+        size = record.get("size_px")
+        if (
+            not isinstance(size, list)
+            or len(size) != 2
+            or any(type(v) is not int or v <= 0 for v in size)
+        ):
+            raise ValueError("Capture image dimensions must be positive integers.")
         context = record["reference_context"]
+        if type(context.get("cut_point")) is not int:
+            raise ValueError("Capture context cut point must be an integer.")
         result_path = Path(record["result_path"]).resolve()
         if str(result_path) not in sources or result_path.name != record["result_file"]:
             raise ValueError("Capture Result must be a hashed source of this record.")
