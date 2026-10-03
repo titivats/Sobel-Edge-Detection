@@ -1,9 +1,9 @@
-"""Model-only panel decision used by the mass-production gate.
+"""Classifier stage of the production gate, also used by model tuning trials.
 
-Metrology and baseline comparison intentionally do not participate here.  A
-panel is released only when its image set is complete and every Sobel-DINOv2
-prediction is GOOD with sufficient confidence. Anything incomplete or
-ambiguous fails closed.
+This stage passes only a complete image set with every Sobel-DINOv2 prediction
+GOOD at sufficient confidence. Production subsequently applies the independent
+measurement / SPEC stage in production_measurement.py. Trials keep this stage
+separate so labels and model quality are not overwritten by metrology.
 """
 
 from __future__ import annotations

@@ -384,11 +384,14 @@ class SettingsWorkflowTests(unittest.TestCase):
         window.cmb_settings_image.setCurrentIndex(0)
         self.assertEqual(window.btn_sobel_ng.text(), "SAVED AS NG")
 
-    def test_training_shortcut_does_not_bypass_settings_authentication(self):
+    def test_settings_button_requires_authentication(self):
         self.window.show()
         self.window.settings_panel.hide()
-        with patch.object(self.window, "_toggle_settings") as authenticate:
-            self.window._open_image_training()
+        with (
+            patch.object(ui, "SETTINGS_PASSWORD", "secret"),
+            patch.object(ui.QInputDialog, "getText", return_value=("", False)) as authenticate,
+        ):
+            self.window.btn_settings.click()
         authenticate.assert_called_once()
         self.assertFalse(self.window.settings_panel.isVisible())
 
@@ -545,6 +548,31 @@ class SettingsWorkflowTests(unittest.TestCase):
                             self.assertNotEqual(window.settings_image_path, previous_path)
                             self.assertEqual(preview.size(), frame_size)
                             self.assertEqual(preview.pixmap().size(), image_size)
+
+    def test_navigation_consumes_pending_sobel_preview_without_timer_redraw(self):
+        window = self.window
+        original = ui.FeatureExtractor.edge_map
+        with patch.object(
+            ui.FeatureExtractor, "edge_map", autospec=True, side_effect=original
+        ) as edge_map:
+            window.sobel_preview_timer.start()
+            window.btn_next_image.click()
+            self.assertEqual(edge_map.call_count, 1)
+            self.assertFalse(window.sobel_preview_timer.isActive())
+            QTest.qWait(window.sobel_preview_timer.interval() + 50)
+            self.assertEqual(edge_map.call_count, 1)
+
+    def test_entering_training_refreshes_once_for_changed_or_unchanged_selection(self):
+        window = self.window
+        window.cmb_training_image.setCurrentIndex(0)
+        window.cmb_settings_image.setCurrentIndex(1)
+        for _ in range(2):
+            with patch.object(
+                window, "_show_training_image", wraps=window._show_training_image
+            ) as show:
+                window._settings_workflow_changed(2)
+                show.assert_called_once()
+                self.assertEqual(window._current_training_image_path(), window.settings_image_path)
 
     def test_parameter_plus_minus_preserve_step_and_limits(self):
         for slider, increase, decrease in self.window.sobel_parameter_step_buttons:

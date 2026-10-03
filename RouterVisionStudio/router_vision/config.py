@@ -27,6 +27,15 @@ class AppConfig:
     # Saved together with the tested data source by the AVTR Settings workflow.
     expected_images_by_route: dict[str, int] = field(default_factory=dict)
     active_recipe: str = ""
+    # Operator-entered acceptance limits, kept separate for each production route.
+    edge_limits_by_route: dict[str, dict[str, float]] = field(default_factory=dict)
+    last_edge_spec_route: str = ""
+    # Immutable per-capture reference manifests exported with each new board.
+    # Empty uses the manifest selected in the edge-review workflow.
+    capture_manifest_dir: str = ""
+    live_poll_seconds: float = 2.0
+    live_file_stable_seconds: float = 2.0
+    live_panel_settle_seconds: float = 30.0
 
     # --- scale -------------------------------------------------------------
     # mm per pixel, read from <PixelSize X=".." Y=".."/> in Eqp.cfg.

@@ -27,6 +27,9 @@ RouterVisionStudio/reference_lines.json
 RouterVisionStudio/.reference_lines.json.*.tmp
 RouterVisionStudio/sobel_finetune/
 RouterVisionStudio/models/
+RouterVisionStudio/production_results.sqlite
+RouterVisionStudio/production_results.sqlite-*
+RouterVisionStudio/production_evidence/
 
 # Credentials, trained weights and proprietary machine files
 .env

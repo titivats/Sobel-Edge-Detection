@@ -47,6 +47,7 @@ def render_prediction_overview(
     cell_width: int = 360,
     cell_height: int = 220,
     tile_context: dict[str, str] | None = None,
+    tile_verdicts: dict[str, str] | None = None,
     columns: int | None = None,
 ) -> np.ndarray:
     """Render every cut point into one Original/Sobel/prediction overview.
@@ -108,9 +109,10 @@ def render_prediction_overview(
 
         label = detail.label or "UNREADABLE"
         confidence = float(detail.confidence)
-        if label == "GOOD" and confidence >= good_confidence_min:
+        displayed_verdict = tile_verdicts.get(detail.path, label) if tile_verdicts else label
+        if displayed_verdict == "GOOD":
             colour = (45, 145, 55)
-        elif label == "NG":
+        elif displayed_verdict == "NG":
             colour = (40, 40, 215)
         else:
             colour = (0, 140, 230)
@@ -133,11 +135,7 @@ def render_prediction_overview(
             font_scale -= 0.02
         point_width = cv2.getTextSize(point_text, font, font_scale, 1)[0][0]
         header_colour = (
-            (80, 220, 95)
-            if label == "GOOD" and confidence >= good_confidence_min
-            else (70, 80, 245)
-            if label == "NG"
-            else (30, 175, 245)
+            (80, 220, 95) if label == "GOOD" else (70, 80, 245) if label == "NG" else (30, 175, 245)
         )
         cv2.putText(
             tile,

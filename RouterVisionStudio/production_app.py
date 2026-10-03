@@ -3,7 +3,8 @@
 The conveyor link is intentionally simulation-only until a controls engineer
 provides the real PLC protocol and I/O map.  The simulated adapter follows the
 same fail-safe contract intended for hardware: no valid matching PASS means
-HOLD. Metrology and baseline comparison are deliberately outside this gate.
+HOLD. Production checks fresh Sobel Inner/Outer against the route SPEC after
+the model passes, with durable evidence and claims for live board intake.
 """
 
 from __future__ import annotations
@@ -13,11 +14,13 @@ import hmac
 import json
 import math
 import os
+import sqlite3
 import sys
 import time
 import traceback
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -66,7 +69,9 @@ from router_vision.auo6000 import (
 from router_vision.config import DEFAULT_CONFIG_NAME, AppConfig
 from router_vision.guard import ProtectedPathError, check_write_target, protected_roots
 from router_vision.interlock import GateState, SimulatedConveyorLink, VisionVerdict
+from router_vision.live_source import LivePanel, LiveSource
 from router_vision.machine import Run, attach_pictures, available_days, load_runs
+from router_vision.machine_reference import sha256
 from router_vision.model import (
     CropBox,
     CutClassifier,
@@ -83,7 +88,14 @@ from router_vision.production import (
     PanelDecision,
     classify_panel,
 )
+from router_vision.production_measurement import (
+    CaptureReferences,
+    file_fingerprint,
+    inspect_with_spec,
+)
+from router_vision.production_store import ProductionStore, panel_key
 from router_vision.production_style import APP_STYLE, COLORS, STATE_TEXT
+from router_vision.recipe_spec_ui import RecipeSpecDialog, validated_limits
 from router_vision.reference_ui import ReferenceMeasurementDialog
 from router_vision.routes import (
     inferred_expected_images,
@@ -94,7 +106,13 @@ from router_vision.routes import (
     model_file_name as model_file_name,
 )
 from router_vision.toolpath import find_recipe
-from router_vision.training_edge import selection_record
+from router_vision.training_edge import (
+    confirmation_key,
+    load_edge_review,
+    saved_confirmation_edge,
+    selection_record,
+    validate_confirmation,
+)
 from router_vision.training_edge_ui import TrainingEdgeDialog
 
 APP_DIR = Path(__file__).resolve().parent
@@ -172,29 +190,99 @@ class InspectionWorker(QThread):
     failed = Signal(str)
 
     def __init__(
-        self, classifier: CutClassifier, run: Run, expected_images: int, good_confidence_min: float
+        self,
+        classifier: CutClassifier,
+        run: Run,
+        expected_images: int,
+        good_confidence_min: float,
+        production_context=None,
     ):
         super().__init__()
         self.classifier = classifier
         self.target_run = run
         self.expected_images = expected_images
         self.good_confidence_min = good_confidence_min
+        self.production_context = production_context
+        self.evidence = {}
 
     def run(self) -> None:
         started = time.perf_counter()
         try:
-            result = classify_panel(
+            if self.production_context is not None:
+                context = self.production_context
+                if context.get("readiness_error"):
+                    result = PanelDecision(run=self.target_run, note=context["readiness_error"])
+                    self.evidence = {"model_stage": "NOT_RUN", "measurement_stage": "NOT_RUN"}
+                else:
+                    result, self.evidence = inspect_with_spec(
+                        self.classifier,
+                        self.target_run,
+                        self.expected_images,
+                        self.good_confidence_min,
+                        context["limits"],
+                        CaptureReferences(context["manifest_location"]),
+                        context["recipe"],
+                        context["edge_state"],
+                        cancelled=self.isInterruptionRequested,
+                    )
+                self.evidence.update(model=context["model"], input_files=context["input_hashes"])
+                if any(sha256(p) != h for p, h in context["input_hashes"].items()):
+                    result.status, result.note = (
+                        "FAULT",
+                        "Panel input files changed during inspection.",
+                    )
+            else:
+                result = classify_panel(
+                    self.classifier,
+                    self.target_run,
+                    self.expected_images,
+                    self.good_confidence_min,
+                    cancelled=self.isInterruptionRequested,
+                )
+            measurement_by_path = {m["path"]: m for m in self.evidence.get("measurements", [])}
+            captions = {}
+            for detail in result.details:
+                measured = measurement_by_path.get(detail.path)
+                if measured:
+                    values = measured.get("measurement", {})
+                    inner, outer = values.get("inner_line_max_mm"), values.get("outer_line_max_mm")
+                    mm_text = (
+                        f"IN {inner:.4f} / OUT {outer:.4f} mm"
+                        if inner is not None and outer is not None
+                        else "MM N/A"
+                    )
+                    captions[detail.path] = (
+                        f"CUT {detail.index + 1:02d} | {mm_text} | SPEC {measured['status']} | "
+                    )
+            overview = render_prediction_overview(
                 self.classifier,
-                self.target_run,
-                self.expected_images,
+                result,
                 self.good_confidence_min,
-                cancelled=self.isInterruptionRequested,
+                tile_context=captions or None,
+                tile_verdicts={path: entry["status"] for path, entry in measurement_by_path.items()}
+                or None,
             )
-            overview = render_prediction_overview(self.classifier, result, self.good_confidence_min)
         except Exception:
             self.failed.emit(traceback.format_exc(limit=6))
             return
         self.completed.emit(result, overview, (time.perf_counter() - started) * 1000.0)
+
+
+class LiveScanWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, source, route, expected):
+        super().__init__()
+        self.source, self.route, self.expected = source, route, expected
+
+    def run(self):
+        try:
+            panels = self.source.poll(self.route, self.expected)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.completed.emit(panels)
 
 
 class VisionTrialWorker(QThread):
@@ -367,6 +455,7 @@ class MainWindow(QMainWindow):
         self.link.connect()
         self.classifier: CutClassifier | None = None
         self.active_model_path: Path | None = None
+        self.active_model_sha256 = None
         self.model_error = "model not loaded"
         # The production classifier follows the recipe selected on the operator
         # screen.  Settings can point at a different AUO6000 export, so its trial
@@ -382,6 +471,10 @@ class MainWindow(QMainWindow):
         self.current_run: Run | None = None
         self.current_result: PanelDecision | None = None
         self.worker: InspectionWorker | None = None
+        self.live_scan_worker: LiveScanWorker | None = None
+        self.live_source = None
+        self.production_store = None
+        self.active_claim = None
         self.settings_worker: VisionTrialWorker | None = None
         self.training_worker: ModelTrainingWorker | None = None
         self.training_paths_in_progress: list[str] = []
@@ -416,6 +509,12 @@ class MainWindow(QMainWindow):
         self.result_dialog: ResultImageDialog | None = None
 
         self._build_ui()
+        try:
+            self.production_store = ProductionStore(
+                CONFIG_PATH.with_name("production_results.sqlite"), self.cfg
+            )
+        except (OSError, ValueError, sqlite3.Error, ProtectedPathError) as exc:
+            self.link.fault(f"Production history unavailable: {exc}")
         if CONFIG_PATH.is_file():
             self._load_dataset()
         else:
@@ -436,6 +535,8 @@ class MainWindow(QMainWindow):
             if DEMO_AUTOSTART:
                 QTimer.singleShot(1_200, self._toggle_auto)
 
+        self._refresh_spec_button()
+        self._restore_production_history()
         self._refresh_gate()
 
     # -- UI ---------------------------------------------------------------
@@ -518,9 +619,9 @@ class MainWindow(QMainWindow):
         self.btn_settings = QPushButton("SETTING ▾")
         self.btn_settings.setObjectName("settings")
         self.btn_settings.clicked.connect(self._toggle_settings)
-        self.btn_training_entry = QPushButton("TRAIN IMAGES")
-        self.btn_training_entry.setObjectName("primary")
-        self.btn_training_entry.clicked.connect(self._open_image_training)
+        self.btn_spec = QPushButton("SPEC")
+        self.btn_spec.setObjectName("outline")
+        self.btn_spec.clicked.connect(self._open_recipe_spec)
         for widget in (self.btn_auto, self.btn_ack, self.btn_hold):
             control_layout.addWidget(widget)
         active_separator = QLabel("|")
@@ -531,7 +632,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.lbl_active_product)
 
         control_layout.addStretch(1)
-        control_layout.addWidget(self.btn_training_entry)
+        control_layout.addWidget(self.btn_spec)
         control_layout.addWidget(self.btn_settings)
         content_layout.addWidget(controls)
 
@@ -558,6 +659,12 @@ class MainWindow(QMainWindow):
         self.spin_interval.setRange(0.5, 30.0)
         self.spin_interval.setValue(1.0)
         self.spin_interval.setSuffix(" seconds after PASS")
+        self.btn_capture_source = QPushButton("CAPTURE DATA")
+        self.btn_capture_source.setObjectName("outline")
+        self.btn_capture_source.clicked.connect(self._select_capture_source)
+        self.btn_retry_board = QPushButton("RETRY HELD BOARD")
+        self.btn_retry_board.setObjectName("outline")
+        self.btn_retry_board.clicked.connect(self._retry_held_board)
         self.lbl_dataset = QLabel("")
         self.lbl_dataset.setStyleSheet("color:#4b5563;")
         self.lbl_dataset.setWordWrap(True)
@@ -754,7 +861,7 @@ class MainWindow(QMainWindow):
         source_header_layout = QVBoxLayout(source_header)
         source_header_layout.setContentsMargins(12, 8, 12, 8)
         source_header_layout.setSpacing(2)
-        step_one = QLabel("1. AUROTEK AUO6000 DATA PATH")
+        step_one = QLabel("AUROTEK AUO6000 DATA PATH")
         step_one.setObjectName("pageTitle")
         source_header_layout.addWidget(step_one)
         image_row = QHBoxLayout()
@@ -844,6 +951,8 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(self.lbl_auo_warning)
         source_layout.addStretch(1)
         continue_row = QHBoxLayout()
+        continue_row.addWidget(self.btn_capture_source)
+        continue_row.addWidget(self.btn_retry_board)
         continue_row.addStretch(1)
         self.btn_continue_sobel = QPushButton("CONTINUE TO SOBEL TUNING")
         self.btn_continue_sobel.setObjectName("primary")
@@ -867,8 +976,8 @@ class MainWindow(QMainWindow):
         self.sobel_header_frame = sobel_header_frame
         sobel_header_frame.setObjectName("pageHeader")
         sobel_header = QHBoxLayout()
-        sobel_header.setContentsMargins(12, 8, 10, 8)
-        step_two = QLabel("2. FINE-TUNE SOBEL EDGE DETECTION")
+        sobel_header.setContentsMargins(12, 8, 12, 8)
+        step_two = QLabel("FINE-TUNE SOBEL EDGE DETECTION")
         step_two.setObjectName("pageTitle")
         sobel_header.addWidget(step_two)
         sobel_header.addStretch(1)
@@ -1039,6 +1148,12 @@ class MainWindow(QMainWindow):
         sobel_workspace.setSizes([1100, 700])
         sobel_layout.addWidget(sobel_workspace, 1)
         training_continue_row = QHBoxLayout()
+        self.btn_sobel_edge = QPushButton("SELECT PCB EDGE A/B")
+        self.btn_sobel_edge.setObjectName("outline")
+        self.btn_sobel_edge.clicked.connect(
+            lambda: self._open_training_edge(self.settings_image_path)
+        )
+        training_continue_row.addWidget(self.btn_sobel_edge)
         training_continue_row.addStretch(1)
         self.btn_continue_training.setMinimumWidth(260)
         training_continue_row.addWidget(self.btn_continue_training)
@@ -1058,6 +1173,12 @@ class MainWindow(QMainWindow):
         step_three = QLabel("TRAIN IMAGES · FROM SOBEL TUNING")
         step_three.setObjectName("pageTitle")
         decision_header_layout.addWidget(step_three)
+        page_headers = (source_header, sobel_header_frame, decision_header)
+        for title in (step_one, step_two, step_three, self.lbl_workflow_progress):
+            title.ensurePolished()
+        header_height = max(48, *(header.layout().sizeHint().height() for header in page_headers))
+        for header in page_headers:
+            header.setFixedHeight(header_height)
         self.lbl_trial_batch = QLabel("CURRENT BATCH: NO AUO6000 DATA SELECTED")
         self.lbl_trial_batch.setWordWrap(True)
         self.lbl_trial_batch.setStyleSheet(
@@ -1170,13 +1291,7 @@ class MainWindow(QMainWindow):
         label_selector.addWidget(self.btn_training_previous)
         label_selector.addWidget(self.btn_training_next)
         review_layout.insertLayout(0, label_selector)
-        self.btn_training_edge = QPushButton("SELECT PCB EDGE A/B")
-        self.btn_training_edge.setObjectName("outline")
-        self.btn_training_edge.clicked.connect(
-            lambda: self._open_training_edge(self._current_training_image_path())
-        )
-        review_layout.insertWidget(1, self.btn_training_edge)
-        review_layout.insertWidget(2, self.lbl_training_image_context)
+        label_layout.addWidget(self.lbl_training_image_context)
         label_primary_actions = QHBoxLayout()
         label_primary_actions.setSpacing(6)
         label_primary_actions.addWidget(self.btn_label_good)
@@ -1423,7 +1538,150 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(page)
 
+    def _latest_spec_route(self) -> str:
+        saved = self.cfg.edge_limits_by_route
+        if not isinstance(saved, dict):
+            return ""
+        if self.cfg.last_edge_spec_route in saved:
+            return self.cfg.last_edge_spec_route
+        if len(saved) == 1:
+            return next(iter(saved))
+        active = self.cmb_recipe.currentText()
+        return active if active in saved else ""
+
+    def _refresh_spec_button(self) -> None:
+        route = self._latest_spec_route()
+        record = self.cfg.edge_limits_by_route.get(route) if route else None
+        try:
+            if not isinstance(record, dict):
+                raise ValueError("No saved limits")
+            limits = validated_limits(record.get("inner_max_mm"), record.get("outer_max_mm"))
+        except ValueError:
+            self.btn_spec.setText("SPEC | NOT SET")
+            self.btn_spec.setToolTip("Set Max Inner / Max Outer in mm for a recipe.")
+            return
+        self.btn_spec.setText(
+            f"SPEC | {route} | "
+            f"INNER ≤ {limits['inner_max_mm']:g} / OUTER ≤ {limits['outer_max_mm']:g} mm"
+        )
+        self.btn_spec.setToolTip(
+            f"Last saved recipe: {route}\n"
+            f"Max Inner: {limits['inner_max_mm']:g} mm\n"
+            f"Max Outer: {limits['outer_max_mm']:g} mm"
+        )
+
+    def _open_recipe_spec(self) -> None:
+        if self.auto_running or self.worker is not None or self._settings_job_busy():
+            return
+        recipes = {}
+        for key, spec in self.recipe_specs.items():
+            name = str(spec.get("recipe") or spec.get("product") or key)
+            recipes[key] = f"{name}  |  {key}" if name != key else key
+        saved = self.cfg.edge_limits_by_route
+        if isinstance(saved, dict):
+            for key in saved:
+                recipes.setdefault(key, key)
+        dialog = RecipeSpecDialog(
+            recipes,
+            saved,
+            self._latest_spec_route() or self.cmb_recipe.currentText(),
+            self._save_recipe_specs,
+            self,
+        )
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+
+    def _save_recipe_specs(
+        self, changes: dict[str, dict[str, float]], selected_route: str = ""
+    ) -> None:
+        if self.auto_running or self.worker is not None or self._settings_job_busy():
+            raise ValueError("Stop inspection or training before saving SPEC.")
+        stored = self.cfg.edge_limits_by_route
+        if not isinstance(stored, dict):
+            raise ValueError("Saved recipe SPEC data is invalid.")
+        updated = dict(stored)
+        for key, limits in changes.items():
+            if key not in self.recipe_specs and key not in stored:
+                raise ValueError("The selected recipe is no longer available.")
+            updated[key] = validated_limits(limits.get("inner_max_mm"), limits.get("outer_max_mm"))
+        latest = selected_route if selected_route in changes else next(reversed(changes))
+        candidate = replace(self.cfg, edge_limits_by_route=updated, last_edge_spec_route=latest)
+        candidate.save(CONFIG_PATH)
+        self.cfg = candidate
+        self._refresh_spec_button()
+
     # -- data -------------------------------------------------------------
+    def _select_capture_source(self) -> None:
+        if self.auto_running or self.worker is not None or self._settings_job_busy():
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self, "Per-capture reference manifests", self.cfg.capture_manifest_dir
+        )
+        if not directory:
+            return
+        candidate = replace(self.cfg, capture_manifest_dir=directory)
+        try:
+            candidate.save(CONFIG_PATH)
+        except (OSError, ValueError, ProtectedPathError) as exc:
+            QMessageBox.warning(self, "Capture data not saved", str(exc))
+            return
+        self.cfg = candidate
+        self.live_source = None
+        self.lbl_detail.setText(f"Capture records: {directory}")
+
+    def _retry_held_board(self) -> None:
+        if (
+            self.auto_running
+            or self.worker is not None
+            or self.live_scan_worker is not None
+            or self._settings_job_busy()
+        ):
+            return
+        try:
+            if self.production_store is None:
+                raise ValueError("Production history is unavailable.")
+            self.production_store.retry_held(self.cmb_recipe.currentText())
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Retry unavailable", str(exc))
+            return
+        self.link.fault(
+            "Held board retry requested. Close SETTING, press ACK / RESET, then START AUTO."
+        )
+        self.live_source = None
+        self._refresh_gate()
+
+    def _restore_production_history(self) -> None:
+        if self.production_store is None:
+            return
+        try:
+            for payload, image_path, completed in reversed(
+                self.production_store.recent(RECENT_RESULT_LIMIT)
+            ):
+                raw = payload["result"]
+                run = dict(raw["run"])
+                for name in ("start", "end"):
+                    run[name] = datetime.fromisoformat(run[name])
+                result = PanelDecision(
+                    run=Run(**run),
+                    status=raw["status"],
+                    note=raw["note"],
+                    checked=raw["checked"],
+                    details=[ImageDecision(**d) for d in raw["details"]],
+                )
+                pixmap = QPixmap(image_path)
+                if pixmap.isNull():
+                    continue
+                self.image_pixmap = pixmap
+                verdict, reason = verdict_for(result)
+                self._append_log(result, verdict, reason, payload["evidence"].get("elapsed_ms", 0))
+                self.table.item(0, 0).setText(
+                    datetime.fromisoformat(completed).astimezone().strftime("%H:%M:%S")
+                )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.link.fault(f"Cannot restore production history: {exc}")
+
     def _dataset_load_failed(self, reason: str) -> None:
         """Discard stale production state before allowing any further inspection."""
         self.runs_by_key.clear()
@@ -1440,6 +1698,7 @@ class MainWindow(QMainWindow):
         self._software_hold(reason)
 
     def _load_dataset(self, dataset: AUO6000Dataset | None = None) -> bool:
+        self.live_source = None
         result_dir = Path(self.cfg.result_dir)
         picture_dir = Path(self.cfg.picture_dir)
         if not result_dir.exists() or not picture_dir.exists():
@@ -1517,6 +1776,7 @@ class MainWindow(QMainWindow):
         table = str(spec.get("table", ""))
         route_text = f" · {table}" if table else ""
         self.lbl_active_product.setText(f"Recipe Name : {spec.get('product', key)}{route_text}")
+        self._refresh_spec_button()
         if not key:
             self.classifier = None
             self.model_error = "no AUO6000 production runs were found"
@@ -1685,6 +1945,7 @@ class MainWindow(QMainWindow):
 
     def _load_active_model(self, key: str) -> None:
         self.active_model_path = None
+        self.active_model_sha256 = None
         if DEMO_MODE:
             self.classifier = DemoClassifier()
             self.model_error = ""
@@ -1701,6 +1962,7 @@ class MainWindow(QMainWindow):
             self.model_error = f"Sobel model missing: {path.name}; retrain before production"
             return
         try:
+            model_hash = sha256(path)
             classifier = CutClassifier.load(
                 path,
                 expected_model_key=key
@@ -1718,6 +1980,15 @@ class MainWindow(QMainWindow):
             return
         self.classifier = classifier
         self.active_model_path = path
+        try:
+            unchanged = sha256(path) == model_hash
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            self.classifier = None
+            self.model_error = "Model changed while loading."
+            return
+        self.active_model_sha256 = model_hash
         self.model_error = ""
 
     def _reload_model(self, _checked: bool = False) -> None:
@@ -1742,12 +2013,12 @@ class MainWindow(QMainWindow):
         self._refresh_trial_model_status()
 
     # -- inspection -------------------------------------------------------
-    def _inspect_next(self) -> None:
+    def _inspect_next(self, live_panel=None) -> None:
         if self.settings_worker is not None or self.training_worker is not None:
             return
         if self.worker and self.worker.isRunning():
             return
-        if not self.queue:
+        if live_panel is None and not self.queue:
             self.link.fault("inspection queue is empty")
             self._refresh_gate()
             return
@@ -1761,7 +2032,7 @@ class MainWindow(QMainWindow):
                 "ACKNOWLEDGE / RESET the current result before inspecting the next panel."
             )
             return
-        if self.queue_index >= len(self.queue):
+        if live_panel is None and self.queue_index >= len(self.queue):
             self._software_hold("no uninspected panels remain in the current queue")
             self.lbl_detail.setText(
                 "No uninspected panels remain. Reload the data source before continuing."
@@ -1774,8 +2045,60 @@ class MainWindow(QMainWindow):
                 "expected cut-point count is not configured; save tested Settings first"
             )
             return
-        run = self.queue[self.queue_index]
-        self.queue_index += 1
+        run = live_panel.run if live_panel is not None else self.queue[self.queue_index]
+        if run.key != key:
+            self._software_hold("Panel route differs from the selected production recipe.")
+            return
+        production_context = None
+        if not DEMO_MODE:
+            try:
+                if self.production_store is None:
+                    raise ValueError("Durable production history is unavailable.")
+                if (
+                    not self.active_model_path
+                    or sha256(self.active_model_path) != self.active_model_sha256
+                ):
+                    raise ValueError(
+                        "Production model file changed; reload and validate the model."
+                    )
+                recipe_candidates = [
+                    p
+                    for p in Path(self.cfg.recipe_dir).rglob("*.rcp")
+                    if p.name.casefold() == Path(run.recipe).name.casefold()
+                ]
+                if len(recipe_candidates) != 1:
+                    raise ValueError("Production recipe is missing or ambiguous.")
+                if live_panel is None:
+                    signature, hashes = file_fingerprint(
+                        [Path(self.cfg.result_dir) / run.result_file, *run.pictures]
+                    )
+                    live_panel = LivePanel(
+                        run, panel_key(self.cfg.result_dir, run), signature, hashes
+                    )
+                production_context = {
+                    "limits": deepcopy(self.cfg.edge_limits_by_route.get(run.key)),
+                    "manifest_location": self.cfg.capture_manifest_dir
+                    or self._default_edge_manifest(),
+                    "recipe": str(recipe_candidates[0]),
+                    "edge_state": deepcopy(self.edge_review),
+                    "model": {
+                        "path": str(self.active_model_path),
+                        "sha256": self.active_model_sha256,
+                        "sobel": asdict(self.classifier.extractor.sobel),
+                    },
+                    "input_hashes": {
+                        **live_panel.hashes,
+                        str(self.active_model_path.resolve()): self.active_model_sha256,
+                    },
+                    "readiness_error": live_panel.readiness_error,
+                }
+                self.production_store.claim(live_panel.key, run.key, live_panel.signature)
+                self.active_claim = live_panel.key
+            except Exception as exc:
+                self._software_hold(f"Production not started: {exc}")
+                return
+        if live_panel is None or not self.auto_running:
+            self.queue_index += 1
         self.current_run = run
         self.current_result = None
         identity = panel_id(run)
@@ -1788,6 +2111,7 @@ class MainWindow(QMainWindow):
             run,
             expected,
             self.cfg.good_confidence_min,
+            production_context,
         )
         self.worker.completed.connect(self._inspection_done)
         self.worker.failed.connect(self._worker_failed)
@@ -1798,6 +2122,34 @@ class MainWindow(QMainWindow):
         self, result: PanelDecision, overview: np.ndarray, elapsed_ms: float
     ) -> None:
         self.current_result = result
+        if self.active_claim is not None:
+            try:
+                evidence = deepcopy(self.worker.evidence)
+                evidence["elapsed_ms"] = elapsed_ms
+                output = (
+                    CONFIG_PATH.parent
+                    / "production_evidence"
+                    / f"{self.active_claim}_{uuid.uuid4().hex}.png"
+                )
+                check_write_target(output, protected_roots(self.cfg))
+                output.parent.mkdir(parents=True, exist_ok=True)
+                encoded_ok, encoded = cv2.imencode(".png", overview)
+                if not encoded_ok:
+                    raise OSError("Cannot encode production evidence.")
+                temporary = output.with_suffix(".tmp")
+                try:
+                    encoded.tofile(temporary)
+                    temporary.replace(output)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                self.production_store.finish(self.active_claim, result, evidence, str(output))
+                self.active_claim = None
+            except Exception as exc:
+                result.status, result.note = "FAULT", f"Production result was not saved: {exc}"
+                self._software_hold(result.note)
+                self._show_result_image(result, overview)
+                self._append_log(result, VisionVerdict.FAULT, result.note, elapsed_ms)
+                return
         verdict, reason = verdict_for(result)
         identity = panel_id(result.run)
         self.link.publish(identity, verdict, reason)
@@ -1907,6 +2259,9 @@ class MainWindow(QMainWindow):
         if self.auto_running:
             self._software_hold("automatic mode stopped by operator")
             return
+        if not DEMO_MODE and self.production_store is None:
+            self._software_hold("Durable production history is unavailable.")
+            return
         if self.classifier is None:
             self.link.fault(self.model_error or "no valid Sobel model; automatic mode refused")
             self._refresh_gate()
@@ -1927,7 +2282,61 @@ class MainWindow(QMainWindow):
             self.link.acknowledge(panel_id(self.current_run) if self.current_run else None)
             self._refresh_gate()
         if self.link.state is GateState.READY:
-            self._inspect_next()
+            if DEMO_MODE:
+                self._inspect_next()
+            elif self.worker is None and self.live_scan_worker is None:
+                if self.live_source is None:
+                    self.live_source = LiveSource(
+                        self.cfg,
+                        self.production_store,
+                        stable_seconds=self.cfg.live_file_stable_seconds,
+                        settle_seconds=self.cfg.live_panel_settle_seconds,
+                        capture_location=self.cfg.capture_manifest_dir
+                        or self._default_edge_manifest(),
+                    )
+                key = self.cmb_recipe.currentText()
+                self.live_scan_worker = LiveScanWorker(
+                    self.live_source, key, int(self.recipe_specs.get(key, {}).get("expected", 0))
+                )
+                self.live_scan_worker.completed.connect(self._live_panels_ready)
+                self.live_scan_worker.failed.connect(self._live_scan_failed)
+                self.live_scan_worker.finished.connect(self._live_scan_finished)
+                self.live_scan_worker.start()
+
+    def _live_panels_ready(self, panels) -> None:
+        if (
+            self.auto_running
+            and self._live_scan_is_current()
+            and self.link.state is GateState.READY
+            and panels
+        ):
+            self._inspect_next(panels[0])
+
+    def _live_scan_is_current(self) -> bool:
+        worker = self.live_scan_worker
+        return bool(
+            worker is not None
+            and worker.route == self.cmb_recipe.currentText()
+            and all(
+                Path(getattr(worker.source.cfg, name)).resolve()
+                == Path(getattr(self.cfg, name)).resolve()
+                for name in ("picture_dir", "result_dir", "recipe_dir")
+            )
+        )
+
+    def _live_scan_failed(self, reason) -> None:
+        if self.auto_running and self._live_scan_is_current():
+            self._software_hold(f"Live source unavailable: {reason}")
+
+    def _live_scan_finished(self) -> None:
+        self.live_scan_worker.deleteLater()
+        self.live_scan_worker = None
+        if self.auto_running and self.worker is None and self.link.state is GateState.READY:
+            self.lbl_detail.setText(
+                "WAITING FOR NEXT BOARD — stable Result and all cut images required"
+            )
+            self.lbl_state_big.setText("WAITING FOR NEXT BOARD")
+            self.auto_timer.start(max(500, int(self.cfg.live_poll_seconds * 1000)))
 
     def _acknowledge(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -1946,14 +2355,6 @@ class MainWindow(QMainWindow):
         self.cmb_recipe.setEnabled(True)
         self.cmb_day.setEnabled(True)
         self._refresh_gate()
-
-    def _open_image_training(self) -> None:
-        if self.auto_running or self.worker is not None or self._settings_job_busy():
-            return
-        if not self.settings_panel.isVisible():
-            self._toggle_settings()
-        if self.settings_panel.isVisible():
-            self.settings_workflow.setCurrentIndex(2)
 
     def _toggle_settings(self) -> None:
         if self.auto_running or self.worker is not None or self._settings_job_busy():
@@ -2103,7 +2504,7 @@ class MainWindow(QMainWindow):
     def _lock_settings_job(self, busy: bool) -> None:
         self.settings_workflow.setEnabled(not busy)
         self.btn_settings.setEnabled(not busy)
-        self.btn_training_entry.setEnabled(not busy)
+        self.btn_spec.setEnabled(not busy and not self.auto_running and self.worker is None)
         self.btn_auto.setEnabled(not busy)
         self.btn_model.setEnabled(not busy)
         self.btn_next.setEnabled(not busy and bool(self.queue))
@@ -2822,7 +3223,10 @@ class MainWindow(QMainWindow):
             button.setEnabled(total > 1 and editing_enabled)
         for button in (self.btn_label_good, self.btn_label_ng, self.btn_clear_label):
             button.setEnabled(has_image and editing_enabled)
-        self.btn_training_edge.setEnabled(has_image and editing_enabled)
+        self.btn_sobel_edge.setEnabled(
+            bool(self.settings_image_path and Path(self.settings_image_path).is_file())
+            and editing_enabled
+        )
         self.chk_training_auto_next.setEnabled(editing_enabled)
         self.btn_back_to_sobel.setEnabled(editing_enabled)
 
@@ -2867,6 +3271,9 @@ class MainWindow(QMainWindow):
             if metadata and metadata.cut_point
             else f"CUT POINT {image_index + 1:02d} | "
         )
+        saved_edge = self._saved_training_edge_badge(path)
+        if saved_edge:
+            context += f"EDGE SAVED: {saved_edge} | "
         selected = PanelDecision(
             run=self.current_run,
             status="GOOD" if label == "GOOD" else "NG",
@@ -2950,7 +3357,12 @@ class MainWindow(QMainWindow):
         )
         cv2.putText(
             canvas,
-            f"{context}MANUAL LABEL: {label}",
+            f"{context}MANUAL LABEL: {label}"
+            + (
+                f" | EDGE SAVED: {saved_edge}"
+                if (saved_edge := self._saved_training_edge_badge(path))
+                else ""
+            ),
             (10, 25),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.62,
@@ -2990,6 +3402,20 @@ class MainWindow(QMainWindow):
             "border-radius:6px; padding:6px 8px; font-weight:800;"
         )
         self._fit_trial_preview()
+
+    def _saved_training_edge_badge(self, path: str) -> str | None:
+        confirmations = self.edge_review.get("confirmations", {})
+        if not isinstance(confirmations, dict) or not confirmations:
+            return None
+        try:
+            review = load_edge_review(
+                self._default_edge_manifest(), path, **self._training_edge_inputs(path)
+            )
+            return saved_confirmation_edge(
+                review, confirmations, asdict(self._sobel_from_controls())
+            )
+        except (OSError, ValueError, KeyError, TypeError, cv2.error):
+            return None
 
     def _training_edge_inputs(self, path: str) -> dict:
         dataset = self.auo_dataset
@@ -3032,7 +3458,7 @@ class MainWindow(QMainWindow):
                 return str(candidate)
         return ""
 
-    def _save_training_edge(self, path: str, review: dict, edge: str) -> None:
+    def _save_training_edge(self, path: str, review: dict, edge: str, confirmation=None) -> None:
         if self._settings_job_busy() or self.worker is not None or self.auto_running:
             raise ValueError("Wait for the current inspection or training job to finish.")
         # Dataset assignment must also remain stable during the review dialog.
@@ -3042,9 +3468,29 @@ class MainWindow(QMainWindow):
             or inputs["product_id"] != review["context"]["product_id"]
         ):
             raise ValueError("Image assignment changed. Reopen edge review.")
+        fresh = load_edge_review(review["manifest_path"], path, **inputs)
+        if fresh != review:
+            raise ValueError("Source data changed. Reopen edge review.")
+        if confirmation is not None:
+            image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            validate_confirmation(confirmation, image, fresh, edge)
+            # Recheck file identities after computation before committing the annotation.
+            if load_edge_review(review["manifest_path"], path, **inputs) != fresh:
+                raise ValueError("Source data changed while validating the edge.")
         choices = dict(self.edge_review.get("choices", {}))
         choices[review["key"]] = selection_record(review, path, edge)
-        updated = {"version": 1, "manifest_path": review["manifest_path"], "choices": choices}
+        confirmations = dict(self.edge_review.get("confirmations", {}))
+        key = confirmation_key(fresh)
+        if confirmation is None:
+            confirmations.pop(key, None)
+        else:
+            confirmations[key] = confirmation
+        updated = {
+            "version": 2,
+            "manifest_path": review["manifest_path"],
+            "choices": choices,
+            "confirmations": confirmations,
+        }
         self._save_sobel_records(edge_review=updated)
         self.edge_review = updated
 
@@ -3060,13 +3506,17 @@ class MainWindow(QMainWindow):
                 self._sobel_from_controls(),
                 self._default_edge_manifest(),
                 self,
-                save_callback=lambda review, edge: self._save_training_edge(path, review, edge),
+                save_callback=lambda review, edge, confirmation: self._save_training_edge(
+                    path, review, edge, confirmation
+                ),
+                confirmations=self.edge_review.get("confirmations", {}),
             )
         except (OSError, ValueError, KeyError, TypeError, cv2.error) as exc:
             QMessageBox.warning(self, "PCB edge review unavailable", str(exc))
             return
         try:
-            dialog.exec()
+            if dialog.exec() == QDialog.Accepted:
+                self._show_training_image()
         finally:
             dialog.deleteLater()
 
@@ -3125,7 +3575,10 @@ class MainWindow(QMainWindow):
         current_path = self.settings_image_path
         for item in range(self.cmb_training_image.count()):
             if str(self.cmb_training_image.itemData(item) or "") == current_path:
-                self.cmb_training_image.setCurrentIndex(item)
+                if self.cmb_training_image.currentIndex() != item:
+                    # The selection signal already refreshes status and preview.
+                    self.cmb_training_image.setCurrentIndex(item)
+                    return
                 break
         self._refresh_training_workflow_status()
         self._show_training_image()
@@ -3254,6 +3707,7 @@ class MainWindow(QMainWindow):
         )
         self.btn_sobel_good.setEnabled(editing_enabled)
         self.btn_sobel_ng.setEnabled(editing_enabled)
+        self.btn_sobel_edge.setEnabled(editing_enabled)
         saved = has_image and self._record_is_saved(
             self.settings_image_path, current_parameters=True
         )
@@ -3441,6 +3895,8 @@ class MainWindow(QMainWindow):
         ).validated()
 
     def _preview_sobel(self) -> bool:
+        # A direct refresh also fulfils any pending debounced preview request.
+        self.sobel_preview_timer.stop()
         path = self.settings_image_path
         if not path or not Path(path).is_file():
             self.lbl_trial_result.setText("SELECT A VALID TEST IMAGE")
@@ -3929,7 +4385,9 @@ class MainWindow(QMainWindow):
         self.cmb_recipe.setEnabled(not busy and not self.auto_running)
         self.cmb_day.setEnabled(not busy and not self.auto_running)
         self.btn_settings.setEnabled(not busy and not self.auto_running)
-        self.btn_training_entry.setEnabled(not busy and not self.auto_running)
+        self.btn_spec.setEnabled(
+            not busy and not self.auto_running and not self._settings_job_busy()
+        )
 
     def _worker_failed(self, message: str) -> None:
         self.auto_running = False
@@ -3942,6 +4400,13 @@ class MainWindow(QMainWindow):
         self.lbl_detail.setText(message)
         if self.current_run is not None:
             result = PanelDecision(run=self.current_run, note=reason)
+            self._show_result_image(result)
+            if self.active_claim is not None:
+                try:
+                    self.production_store.finish(self.active_claim, result, {"error": message})
+                    self.active_claim = None
+                except Exception as exc:
+                    self.link.fault(f"Inspection and durable result recording failed: {exc}")
             self._append_log(result, VisionVerdict.FAULT, reason, 0.0)
         self._refresh_gate()
 
@@ -3951,6 +4416,8 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
             self.worker = None
         self._set_busy(False)
+        if self.auto_running and self.link.state is GateState.READY:
+            self.auto_timer.start(max(500, int(self.cfg.live_poll_seconds * 1000)))
 
     def _fit_image(self) -> None:
         if self.image_pixmap is None:
@@ -4037,7 +4504,12 @@ class MainWindow(QMainWindow):
         self.heartbeat_timer.stop()
         self.link.disconnect("application closing; conveyor held")
         running = False
-        for worker in (self.worker, self.settings_worker, self.training_worker):
+        for worker in (
+            self.worker,
+            self.settings_worker,
+            self.training_worker,
+            self.live_scan_worker,
+        ):
             if worker and worker.isRunning():
                 worker.requestInterruption()
                 running = True

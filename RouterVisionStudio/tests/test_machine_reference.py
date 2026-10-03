@@ -84,6 +84,33 @@ class MachineReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source changed"):
             load_manifest(self.manifest_path)
 
+    def test_vertical_neutral_side_fields_keep_left_right_when_travel_reverses(self):
+        projection = self.data["images"][0]["projection"]
+        projection.pop("upper_A_px")
+        projection.pop("lower_B_px")
+        projection.update(
+            reconstructed_nc_xy_mm=[[0, -0.8], [0, 0.8]],
+            edge_A_px=[[95, 40], [95, 200]],
+            edge_B_px=[[225, 40], [225, 200]],
+        )
+        for reverse in (False, True):
+            if reverse:
+                for name in ("reconstructed_nc_xy_mm", "edge_A_px", "edge_B_px"):
+                    projection[name].reverse()
+            manifest = self.load()
+            a = reference_for_image(manifest, self.picture, "A")
+            b = reference_for_image(manifest, self.picture, "B")
+            self.assertEqual((a["pcb_side_name"], b["pcb_side_name"]), ("left", "right"))
+            self.assertEqual(b["cut_path"]["axis_extent_px"], [-25, 265])
+            self.assertEqual(b["orientation"], "vertical")
+
+    def test_conflicting_legacy_and_neutral_tangents_are_rejected(self):
+        projection = self.data["images"][0]["projection"]
+        projection["edge_B_px"] = copy.deepcopy(projection["lower_B_px"])
+        projection["lower_B_px"][0][1] += 1
+        with self.assertRaisesRegex(ValueError, "Stored tangent differs"):
+            reference_for_image(self.load(), self.picture, "B")
+
     def test_changed_image_is_rejected_even_with_same_filename(self):
         manifest = self.load()
         self.picture.write_bytes(b"replacement image")
