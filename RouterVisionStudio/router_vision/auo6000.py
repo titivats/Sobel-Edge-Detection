@@ -33,6 +33,7 @@ class AUO6000Panel:
     product_id: str = ""
     start_at: datetime | None = None
     end_at: datetime | None = None
+    table: str = ""
 
 
 @dataclass(frozen=True)
@@ -168,10 +169,27 @@ class SourceSelectionError(ValueError):
         self.candidates = candidates or []
 
 
-def _router_root(selected: Path) -> tuple[Path, Path]:
+def _router_root(selected: Path, *, require_machine_layout: bool = False) -> tuple[Path, Path]:
     selected = selected.resolve()
     if not selected.is_dir():
         raise OSError(f"Data source folder does not exist: {selected}")
+    machine = (
+        selected.parent.parent
+        if selected.name.casefold() == "picture" and selected.parent.name.casefold() == "sepdata"
+        else selected.parent
+        if selected.name.casefold() in {"sep.net", "sepdata"}
+        else selected
+    )
+    program = machine / "Sep.Net"
+    data = machine / "SepData"
+    if require_machine_layout or (program.is_dir() and data.is_dir()):
+        missing = [str(path) for path in (program, data, data / "Picture") if not path.is_dir()]
+        if missing:
+            raise SourceSelectionError(
+                "Select a machine folder containing Sep.Net and SepData/Picture. "
+                "Missing: " + ", ".join(missing)
+            )
+        return data, data / "Picture"
     if selected.name.casefold() == "picture" and selected.parent.is_dir():
         return selected.parent, selected
     # Sep.Net contains the machine program, not training pictures. Resolve only
@@ -209,25 +227,35 @@ def _router_root(selected: Path) -> tuple[Path, Path]:
     return selected, selected
 
 
-def result_files_signature(result_dir: str | Path) -> tuple:
+def result_files_signature(result_dir: str | Path, *, cancelled=None) -> tuple:
     """Detect CSV additions, removals and changes since panel assignment."""
     if not result_dir:
         return ()
-    directory = Path(result_dir)
-    # iterdir raises on disconnection instead of treating it as an empty export.
+    directory = Path(result_dir).resolve()
+    # scandir reuses directory metadata instead of resolving every regular CSV twice.
+    # It still raises on disconnection rather than treating it as an empty export.
     signatures = []
-    for path in directory.iterdir():
-        if path.name.startswith("_") and path.suffix.casefold() == ".csv":
-            stat = path.stat()
-            signatures.append((str(path.resolve()), stat.st_size, stat.st_mtime_ns))
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if cancelled and cancelled():
+                raise InterruptedError("Source loading cancelled.")
+            if entry.name.startswith("_") and entry.name.casefold().endswith(".csv"):
+                stat = entry.stat()
+                path = directory / entry.name
+                if entry.is_symlink():
+                    path = path.resolve()
+                signatures.append((str(path), stat.st_size, stat.st_mtime_ns))
     return tuple(sorted(signatures))
 
 
-def _read_panels(result_dir: Path) -> list[AUO6000Panel]:
+def _read_panels(result_dir: Path, *, cancelled=None) -> list[AUO6000Panel]:
     panels: list[AUO6000Panel] = []
     if not result_dir.is_dir():
         return panels
+    result_dir = result_dir.resolve()
     for path in sorted(result_dir.glob("_*.csv"), key=lambda item: item.name.casefold()):
+        if cancelled and cancelled():
+            raise InterruptedError("Source loading cancelled.")
         try:
             with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
                 rows = csv.DictReader(fh)
@@ -242,12 +270,13 @@ def _read_panels(result_dir: Path) -> list[AUO6000Panel]:
             AUO6000Panel(
                 sn=(row.get("SN") or "").strip(),
                 result=result,
-                result_file=str(path.resolve()),
+                result_file=str(path.resolve() if path.is_symlink() else path),
                 result_at=_timestamp_from_name(path, RESULT_STAMP),
                 recipe_name=(row.get("Recipe_Name") or "").strip(),
                 product_id=(row.get("ProductId") or "").strip(),
                 start_at=_timestamp_from_csv(row.get("Start_time")),
                 end_at=_timestamp_from_csv(row.get("End_time")),
+                table=(row.get("CutedTable") or row.get("Table") or "").strip(),
             )
         )
     panels.sort(key=lambda panel: panel.start_at or panel.result_at or datetime.max)
@@ -369,10 +398,12 @@ def _assign_picture_groups(
     return assignments, ambiguous
 
 
-def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
+def scan_auo6000_dataset(
+    directory: str | Path, *, require_machine_layout: bool = False, cancelled=None
+) -> AUO6000Dataset:
     """Scan an AUO6000 export root or its Picture directory without changing files."""
     selected = Path(directory)
-    root, picture_dir = _router_root(selected)
+    root, picture_dir = _router_root(selected, require_machine_layout=require_machine_layout)
     result_dir = root / "Result"
     recipe_dir = root / "Recipe"
     log_dir = root / "Log"
@@ -389,13 +420,19 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
     else:
         picture_paths = []
 
-    result_snapshot = result_files_signature(result_dir) if result_dir.is_dir() else ()
-    panels = _read_panels(result_dir)
-    if result_snapshot != (result_files_signature(result_dir) if result_dir.is_dir() else ()):
+    result_snapshot = (
+        result_files_signature(result_dir, cancelled=cancelled) if result_dir.is_dir() else ()
+    )
+    panels = _read_panels(result_dir, cancelled=cancelled)
+    if result_snapshot != (
+        result_files_signature(result_dir, cancelled=cancelled) if result_dir.is_dir() else ()
+    ):
         raise OSError("Result data changed during scanning. Select the source again.")
     assignments, ambiguous_windows = _assign_picture_groups(picture_paths, panels)
     images: list[AUO6000Image] = []
     for group, panel in assignments:
+        if cancelled and cancelled():
+            raise InterruptedError("Source loading cancelled.")
         total = len(group)
         for cut_point, (path, captured_at) in enumerate(group, 1):
             images.append(
@@ -423,9 +460,9 @@ def scan_auo6000_dataset(directory: str | Path) -> AUO6000Dataset:
     products = sorted({panel.product_id.strip() for panel in panels if panel.product_id.strip()})
     if len(products) != 1:
         warnings.append(
-            f"Settings require one ProductId; found {len(products)}: "
+            f"Source contains {len(products)} ProductId(s): "
             + (", ".join(products) or "none")
-            + ". Select a verified single-product export before training."
+            + ". Select Recipe / Program to review its matching records before training."
         )
     disguised = sum(
         1

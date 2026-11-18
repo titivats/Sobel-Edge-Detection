@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .machine import Run
@@ -39,6 +40,23 @@ class PanelDecision:
     details: list[ImageDecision] = field(default_factory=list)
 
 
+def repeated_cut_image(paths):
+    """Find two cut positions pointing to the same file, including filesystem aliases."""
+    seen = {}
+    for index, value in enumerate(paths, 1):
+        path = Path(value).resolve()
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            identity = path
+        else:
+            identity = (stat.st_dev, stat.st_ino) if stat.st_ino else path
+        if identity in seen:
+            return f"Cut points {seen[identity]} and {index} refer to the same image file."
+        seen[identity] = index
+    return ""
+
+
 def classify_panel(
     classifier: CutClassifier,
     run: Run,
@@ -58,6 +76,9 @@ def classify_panel(
         return result
     if len(run.pictures) != expected_images:
         result.note = f"expected {expected_images} images, found {len(run.pictures)}"
+        return result
+    result.note = repeated_cut_image(run.pictures)
+    if result.note:
         return result
     if set(classifier.classes) != {"GOOD", "NG"}:
         result.note = "model classes must be exactly GOOD and NG"

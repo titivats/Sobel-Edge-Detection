@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -19,7 +22,7 @@ from router_vision.live_source import LiveSource
 from router_vision.machine import read_run
 from router_vision.machine_reference import sha256
 from router_vision.production import PanelDecision
-from router_vision.production_store import panel_key
+from router_vision.production_store import ProductionStore, panel_key
 
 from tests import test_live_production as live
 
@@ -118,6 +121,176 @@ class ProductionResilienceTests(unittest.TestCase):
         self.clock[0] = 34.0
         self.assertIn("ambiguous", source.poll("P", 2)[0].readiness_error)
 
+    def test_separate_capture_files_cannot_assign_one_image_to_two_cuts(self):
+        self.fx.recorded_captures()
+        directory = self.fx.root / "split"
+        directory.mkdir()
+        first, second = self.fx.data["images"]
+        second["name"], second["sha256"] = first["name"], first["sha256"]
+        Path(self.fx.run.pictures[1]).unlink()
+        for index, record in enumerate((first, second), 1):
+            (directory / f"{index}.json").write_text(
+                json.dumps({**self.fx.data, "images": [record]})
+            )
+        self.fx.manifest_path = directory
+        source = self.source()
+        self.assertEqual(self.stable(source), [])
+        self.clock[0] = 34.0
+        self.assertIn("same image", source.poll("P", 2)[0].readiness_error)
+
+    def test_completed_geometry_and_recipe_remain_pinned_after_restart(self):
+        self.fx.recorded_captures()
+        self.fx.save_manifest()
+        for changed in ("capture", "recipe"):
+            with self.subTest(changed=changed):
+                source = self.source()
+                self.clock[0] = 0
+                panel = self.stable(source)[0]
+                self.fx.store.claim(panel.key, "P", panel.signature)
+                self.fx.store.finish(panel.key, PanelDecision(run=panel.run, status="GOOD"), {})
+                if changed == "capture":
+                    self.fx.data["images"][0]["motion"]["camera_xy_mm"][0] += 0.01
+                    self.fx.save_manifest()
+                else:
+                    self.fx.recipe.write_text("changed recipe")
+                restarted = self.source()
+                self.clock[0] = 0
+                restarted.poll("P", 2)
+                self.clock[0] = 3
+                with self.assertRaisesRegex(ValueError, "source files changed"):
+                    restarted.poll("P", 2)
+                self.assertEqual(self.fx.store.state(panel.key)[0], "SOURCE_CHANGED")
+                self.fx.store.retry_held("P")
+
+    def test_append_to_shared_recorded_manifest_keeps_previous_board_valid(self):
+        self.fx.recorded_captures()
+        for name in self.fx.run.pictures:
+            self.fx.data["source_files"].append({"path": name, "sha256": sha256(name)})
+        self.fx.save_manifest()
+        source = self.source()
+        panel = self.stable(source)[0]
+        self.fx.store.claim(panel.key, "P", panel.signature)
+        self.fx.store.finish(panel.key, PanelDecision(run=panel.run, status="GOOD"), {})
+        other = self.fx.result_path.with_name("_20260903_120230.csv")
+        other.write_text(self.fx.result_path.read_text().replace("\n1,P.rcp", "\n2,P.rcp"))
+        self.fx.data["source_files"].append({"path": str(other), "sha256": sha256(other)})
+        for record in deepcopy(self.fx.data["images"]):
+            original = self.fx.machine / "Picture" / record["name"]
+            new_image = original.with_name("board2-" + original.name)
+            new_image.write_bytes(original.read_bytes())
+            record.update(
+                name=new_image.name, csv_sn="2", result_file=other.name, result_path=str(other)
+            )
+            self.fx.data["images"].append(record)
+            self.fx.data["source_files"].append(
+                {"path": str(new_image), "sha256": sha256(new_image)}
+            )
+        self.fx.save_manifest()
+        self.clock[0] = 6
+        self.assertEqual(source.poll("P", 2), [])
+        self.clock[0] = 9
+        (new_board,) = source.poll("P", 2)
+        self.assertEqual(new_board.run.sn, "2")
+        self.assertFalse(new_board.readiness_error)
+        self.fx.run = new_board.run
+        decision, _ = self.fx.inspect(refs=CaptureReferences(self.fx.manifest_path))
+        self.assertEqual(decision.status, "GOOD", decision.note)
+        self.assertEqual(self.fx.store.state(panel.key)[0], "DONE")
+
+    def test_old_unclaimed_files_without_captures_do_not_block_new_work(self):
+        for name, body in (
+            ("_20240101_080000.csv", "invalid"),
+            (
+                "_20240101_081000.csv",
+                "SN,Recipe_Name,ProductId,Result,CuttingTime\nOLD,P.rcp,P,True,20\n",
+            ),
+            ("_20240101_082000.csv", ""),
+        ):
+            path = self.fx.result_path.with_name(name)
+            path.write_text(body)
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+        source = self.source()
+        panel = self.stable(source)[0]
+        self.fx.store.claim(panel.key, "P", panel.signature)
+        self.fx.store.finish(panel.key, PanelDecision(run=panel.run), {})
+        self.clock[0] = 60
+        self.assertEqual(source.poll("P", 2), [])
+        path.write_text("new invalid contents")
+        self.assertEqual(source.poll("P", 2), [])
+        self.clock[0] = 64
+        self.assertEqual(source.poll("P", 2), [])
+        self.clock[0] = 96
+        with self.assertRaisesRegex(ValueError, "Invalid stable Result"):
+            source.poll("P", 2)
+
+    def test_empty_new_result_has_a_deadline(self):
+        self.fx.result_path.write_bytes(b"")
+        source = self.source()
+        self.assertEqual(self.stable(source), [])
+        self.clock[0] = 34
+        with self.assertRaisesRegex(ValueError, "Result is empty"):
+            source.poll("P", 2)
+
+    def test_restart_cannot_age_a_new_unclaimed_result_into_the_archive(self):
+        source = self.source()
+        self.stable(source)
+        new = self.fx.result_path.with_name("_20240101_085000.csv")
+        new.write_text("invalid")
+        os.utime(new, (1_700_000_000, 1_700_000_000))
+        restarted = self.source()
+        self.clock[0] = 0
+        self.stable(restarted)
+        self.clock[0] = 35
+        with self.assertRaisesRegex(ValueError, "Invalid stable Result"):
+            restarted.poll("P", 2)
+
+    def test_legacy_decision_uses_original_evidence_without_replaying(self):
+        from router_vision.production_measurement import file_fingerprint
+
+        source = self.source()
+        panel = self.stable(source)[0]
+        old_signature, _ = file_fingerprint([self.fx.result_path, *panel.run.pictures])
+        self.fx.store.claim(panel.key, "P", old_signature)
+        result, evidence = self.fx.inspect()
+        result.run = panel.run
+        self.fx.store.finish(panel.key, result, evidence)
+        self.assertEqual(source.poll("P", 2), [])
+        self.fx.recipe.write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "source files changed"):
+            source.poll("P", 2)
+
+    def test_legacy_table_migration_tracks_result_even_if_rewritten_as_invalid_csv(self):
+        from router_vision.production_measurement import file_fingerprint
+
+        csv = self.fx.result_path
+        key = panel_key(self.fx.cfg.result_dir, read_run(csv, strict=True))
+        signature, _ = file_fingerprint([csv, *self.fx.run.pictures])
+        payload = json.dumps(
+            {"result": {"run": {"source_path": str(csv)}, "status": "GOOD"}, "evidence": {}}
+        )
+        database = self.fx.root / "old.sqlite"
+        with sqlite3.connect(database) as db:
+            db.execute(
+                "CREATE TABLE panels (panel_key TEXT PRIMARY KEY, route TEXT, signature TEXT, "
+                "state TEXT, started_at TEXT, completed_at TEXT, status TEXT, payload TEXT, overview TEXT)"
+            )
+            db.execute(
+                "INSERT INTO panels VALUES(?,?,?,'DONE','then','then','GOOD',?,NULL)",
+                (key, "P", signature, payload),
+            )
+        self.fx.store = ProductionStore(database, self.fx.cfg)
+        self.assertEqual(self.fx.store.tracked_panels("P")[0][-1], str(csv))
+        source = self.source()
+        self.assertEqual(self.stable(source), [])
+        csv.write_text("invalid contents")
+        source.poll("P", 2)
+        self.clock[0] = 6
+        source.poll("P", 2)
+        self.clock[0] = 37
+        with self.assertRaisesRegex(ValueError, "Invalid stable Result"):
+            source.poll("P", 2)
+        self.assertEqual(self.fx.store.state(key)[0], "SOURCE_CHANGED")
+
     def test_never_stable_image_times_out_instead_of_waiting_forever(self):
         source = self.source()
         source.poll("P", 2)
@@ -136,6 +309,38 @@ class ProductionResilienceTests(unittest.TestCase):
         self.fx.result_path.unlink()
         with self.assertRaisesRegex(ValueError, "unfinished inspection"):
             source.poll("P", 2)
+
+    def test_approved_retry_waits_for_original_board_and_blocks_new_complete_board(self):
+        source = self.source()
+        (original,) = self.stable(source)
+        self.fx.store.claim(original.key, "P", original.signature, result_path=self.fx.result_path)
+        self.fx.store.retry_held("P")
+        saved = self.fx.result_path.read_bytes()
+        self.fx.result_path.unlink()
+        other = self.fx.result_path.with_name("_20260903_120230.csv")
+        other.write_text("SN,Recipe_Name,ProductId,Result,CuttingTime\n2,P.rcp,P,True,20\n")
+        for record in deepcopy(self.fx.data["images"]):
+            old = self.fx.machine / "Picture" / record["name"]
+            new = old.with_name("second-" + old.name)
+            new.write_bytes(old.read_bytes())
+            record.update(csv_sn="2", name=new.name)
+            self.fx.data["images"].append(record)
+        self.fx.save_manifest()
+        for now in (6, 9, 40):
+            self.clock[0] = now
+            with self.assertRaisesRegex(ValueError, "Approved retry is waiting"):
+                source.poll("P", 2)
+        self.fx.result_path.write_bytes(saved)
+        self.assertEqual(source.poll("P", 2), [])
+        self.clock[0] += 3
+        (retry,) = source.poll("P", 2)
+        self.assertEqual(retry.key, original.key)
+        self.assertFalse(retry.readiness_error)
+        self.fx.store.claim(retry.key, "P", retry.signature)
+        self.fx.store.finish(retry.key, PanelDecision(run=retry.run, status="GOOD"), {})
+        (new,) = source.poll("P", 2)
+        self.assertEqual(new.run.sn, "2")
+        self.assertFalse(new.readiness_error)
 
     def test_source_quarantine_requires_retry_even_after_restoration(self):
         source = self.source()

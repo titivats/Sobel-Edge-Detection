@@ -31,9 +31,16 @@ def measure_image_edge(image, review, edge):
     reference = review[edge]
     vertical = reference["orientation"] == "vertical"
     working_image = cv2.transpose(image) if vertical else image
-    result = analyse(working_image, side=edge, allow_edge_only=True, fit_baseline=False)
-    guide = preview_reference(result, working_image.shape[1])
     path = reference["cut_path"]
+    centerline = np.asarray(path["center_start_end_px"], dtype=float)
+    result = analyse(
+        working_image,
+        side=edge,
+        allow_edge_only=True,
+        fit_baseline=False,
+        cut_centerline=centerline[:, ::-1] if vertical else centerline,
+    )
+    guide = preview_reference(result, working_image.shape[1])
     lo, hi = np.ceil(path["axis_extent_px"][0]), np.floor(path["axis_extent_px"][1])
     in_path = (result["x"] >= lo) & (result["x"] <= hi)
     if not in_path.any():

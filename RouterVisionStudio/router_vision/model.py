@@ -13,8 +13,12 @@ directory; the first load needs internet, after that it works offline.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
+import os
+import re
 import time
 import uuid
 from collections.abc import Mapping
@@ -28,6 +32,35 @@ import torch.nn as nn
 
 from .guard import check_write_target
 from .images import read_image
+
+
+def approved_model_path(candidate: Path, digest: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("Test and save Settings to approve this program's model.")
+    return candidate.parent / "approved" / f"{digest}.pt"
+
+
+def store_approved_model(candidate: Path, digest: str, protected: list[Path]) -> None:
+    """Install the exact tested bytes before the configuration publishes their digest."""
+    destination = approved_model_path(candidate, digest)
+    check_write_target(destination, protected)
+    payload = candidate.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise ValueError("Model changed after testing. Reload it and run the test again.")
+    if destination.is_file() and destination.read_bytes() == payload:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    check_write_target(temporary, protected)
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
 
 BACKBONES = {
     "dinov2_vits14": 384,
@@ -379,6 +412,10 @@ class FeatureExtractor:
         img = read_image(str(image_path), cv2.IMREAD_COLOR)
         if img is None:
             return None
+        return self.edge_map_array(img, crop)
+
+    def edge_map_array(self, img: np.ndarray, crop: CropBox) -> np.ndarray | None:
+        """Use the same Sobel formula on an already decoded source image."""
         img = crop.apply(img)
         if img.size == 0:
             return None
@@ -474,6 +511,7 @@ class CutClassifier:
         self.device = pick_device()
         self.extractor = FeatureExtractor(backbone, self.device, self.sobel)
         self.report: TrainReport | None = None
+        self.checkpoint_sha256 = ""
 
     # -- training ----------------------------------------------------------
     def train(
@@ -508,6 +546,7 @@ class CutClassifier:
             raise ValueError(
                 f"Need at least 2 labelled images per class for train/validation split; {detail}."
             )
+        self.checkpoint_sha256 = ""
         started = time.time()
         paths = [p for p, _ in items]
         names = sorted({c for _, c in items})
@@ -668,12 +707,14 @@ class CutClassifier:
         check_write_target(sidecar_temporary, roots)
         try:
             torch.save(payload, model_temporary)
+            digest = hashlib.sha256(model_temporary.read_bytes()).hexdigest()
             sidecar_temporary.write_text(
                 json.dumps(metadata, indent=2, allow_nan=False),
                 encoding="utf-8",
             )
             model_temporary.replace(path)
             sidecar_temporary.replace(sidecar)
+            self.checkpoint_sha256 = digest
         finally:
             for temporary in (model_temporary, sidecar_temporary):
                 try:
@@ -686,8 +727,13 @@ class CutClassifier:
         cls,
         path: Path,
         expected_model_key: str | None = None,
+        expected_sha256: str | None = None,
     ) -> "CutClassifier":
-        blob = torch.load(path, map_location="cpu", weights_only=True)
+        payload = Path(path).read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if expected_sha256 is not None and digest != expected_sha256:
+            raise ValueError("Approved checkpoint changed; retest and save Settings.")
+        blob = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
         backbone, classes, crop, sobel, state, report, model_key = _checkpoint_parts(
             blob, expected_model_key
         )
@@ -697,4 +743,5 @@ class CutClassifier:
         head.load_state_dict(dict(state), strict=True)
         model.head = head.eval().to(model.device)
         model.report = report
+        model.checkpoint_sha256 = digest
         return model

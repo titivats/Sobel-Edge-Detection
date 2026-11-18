@@ -413,6 +413,33 @@ class LiveProductionTests(unittest.TestCase):
         self.assertEqual(len(panels), 1)
         self.assertFalse(panels[0].readiness_error)
 
+    def test_live_ignores_different_recipe_even_when_product_and_table_are_the_same(self):
+        from router_vision.program_selection import ProgramSelection
+
+        selected = ProgramSelection("P", "SELECTED.rcp")
+        self.cfg.active_recipe = selected.route
+        self.cfg.active_program_key = selected.key
+        self.cfg.active_program_recipe = selected.recipe
+        clock = [0.0]
+        source = LiveSource(
+            self.cfg, self.store, clock=lambda: clock[0], capture_location=self.manifest_path
+        )
+        self.assertEqual(source.poll("P", 2), [])
+        clock[0] = 3.0
+        self.assertEqual(source.poll("P", 2), [])
+        self.assertEqual(self.store.states("P"), {})
+
+        selected = ProgramSelection("P", "P.rcp")
+        self.cfg.active_program_key = selected.key
+        self.cfg.active_program_recipe = selected.recipe
+        source = LiveSource(
+            self.cfg, self.store, clock=lambda: clock[0], capture_location=self.manifest_path
+        )
+        self.assertEqual(source.poll("P", 2), [])
+        clock[0] = 6.0
+        panels = source.poll("P", 2)
+        self.assertEqual([p.run.sn for p in panels], ["1"])
+
     def test_new_board_reuses_only_side_and_measures_new_pixels(self):
         _, before = self.inspect()
         for record, path in zip(self.data["images"], self.run.pictures):
@@ -440,8 +467,14 @@ class LiveProductionTests(unittest.TestCase):
         from tests import test_settings_workflow as workflow
 
         workflow.SettingsWorkflowTests.setUpClass()
-        self.cfg.expected_images_by_route = {"P": 2}
-        self.cfg.edge_limits_by_route = {"P": self.limits}
+        from router_vision.program_selection import ProgramSelection
+
+        program = ProgramSelection("P", "P.rcp")
+        self.cfg.expected_images_by_route = {program.key: 2}
+        self.cfg.active_recipe = program.route
+        self.cfg.active_program_key = program.key
+        self.cfg.active_program_recipe = program.recipe
+        self.cfg.edge_limits_by_route = {program.key: self.limits}
         self.cfg.capture_manifest_dir = str(self.manifest_path)
         self.cfg.live_file_stable_seconds = 0
         self.cfg.live_poll_seconds = 0.5
@@ -466,6 +499,7 @@ class LiveProductionTests(unittest.TestCase):
         model.write_bytes(b"test model identity")
         window.active_model_path = model
         window.active_model_sha256 = sha256(model)
+        window.cfg.active_model_sha256 = window.active_model_sha256
         window.edge_review = self.state
         window._acknowledge()
         window._toggle_auto()
@@ -505,7 +539,7 @@ class LiveProductionTests(unittest.TestCase):
             QTest.qWait(25)
             if window.live_scan_worker is None:
                 break
-        window._save_recipe_specs({"P": {"inner_max_mm": 1.0, "outer_max_mm": 0.1}})
+        window._save_recipe_specs({program.key: {"inner_max_mm": 1.0, "outer_max_mm": 0.1}})
         new_result = self.machine / "Result/_20260903_120430.csv"
         new_result.write_text("SN,Recipe_Name,ProductId,Result,CuttingTime\n3,P.rcp,P,True,20\n")
         for old, stamp in zip(list(self.data["images"][:2]), ("120410", "120415")):
@@ -523,11 +557,28 @@ class LiveProductionTests(unittest.TestCase):
         self.assertEqual(latest["result"]["status"], "NG")
         self.assertEqual(latest["evidence"]["model_stage"], "GOOD")
         self.assertEqual(latest["evidence"]["measurement_stage"], "NG")
+        for payload, overview, _ in window.production_store.recent():
+            archive = payload["evidence"]["archive"]
+            self.assertTrue(archive["complete"])
+            folder = Path(archive["directory"])
+            self.assertEqual(len(list(folder.glob("cut_*_original.jpeg"))), 2)
+            self.assertEqual(len(list(folder.glob("cut_*_sobel.jpeg"))), 2)
+            self.assertEqual(Path(overview).suffix, ".jpeg")
+            audit = json.loads((folder / "inspection.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit["result"]["status"], payload["result"]["status"])
+        events = [
+            json.loads(line)["event"]
+            for line in (self.root / "logs/avtr.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(events.count("board.images_archived"), 3)
+        self.assertEqual(events.count("board.result"), 3)
         window.close()
         reopened = workflow.ui.MainWindow()
         self.addCleanup(reopened.deleteLater)
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.table.rowCount(), 3)
+        with (self.root / "logs/avtr.jsonl").open(encoding="utf-8") as stream:
+            self.assertEqual(sum(json.loads(line)["event"] == "board.result" for line in stream), 3)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,13 @@ class ProductionClassifierTests(unittest.TestCase):
         result = classify_panel(classifier, run(), 3, 0.95)
         self.assertEqual(result.status, STATUS_GOOD)
 
+    def test_one_image_cannot_satisfy_two_cuts_even_when_predictions_are_good(self):
+        panel = run(pictures=2)
+        panel.pictures[1] = "./" + panel.pictures[0]
+        result = classify_panel(FakeClassifier([("GOOD", 0.99)] * 2), panel, 2)
+        self.assertEqual(result.status, STATUS_FAULT)
+        self.assertIn("same image", result.note)
+
     def test_any_ng_stops_panel(self):
         classifier = FakeClassifier([("GOOD", 0.99), ("NG", 0.55), ("GOOD", 0.99)])
         result = classify_panel(classifier, run(), 3, 0.95)

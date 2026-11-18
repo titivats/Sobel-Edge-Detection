@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import cv2
 import numpy as np
 from router_vision.guard import ProtectedPathError
-from router_vision.measurement_trial import pick_reference, run_trial, side_from_point
+from router_vision.machine_reference import sha256
+from router_vision.measurement_trial import main, pick_reference, run_trial, side_from_point
 from router_vision.reference import image_signature
+from tests.test_machine_reference import MachineReferenceFixture
 
 
 class MeasurementTrialTests(unittest.TestCase):
@@ -128,6 +132,57 @@ class MeasurementTrialTests(unittest.TestCase):
             line, side = pick_reference(image)
         self.assertEqual(line, [[200, 200], [800, 200]])
         self.assertEqual(side, 1)
+
+
+class RecordedMeasurementTrialTests(MachineReferenceFixture, unittest.TestCase):
+    def test_cli_measures_without_manual_line_and_preserves_provenance(self):
+        self.load()
+        output = self.root / "trials"
+        original = self.picture.read_bytes()
+        with redirect_stdout(StringIO()):
+            code = main(
+                [
+                    "--image",
+                    str(self.picture),
+                    "--machine-reference",
+                    str(self.manifest_path),
+                    "--output",
+                    str(output),
+                    "--radius",
+                    "24",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(original, self.picture.read_bytes())
+        result = json.loads(next(output.glob("*/measurement.json")).read_text())
+        self.assertAlmostEqual(result["inner_line_max_mm"], 0.045, delta=0.01)
+        self.assertEqual(result["outer_line_max_mm"], 0)
+        self.assertEqual(result["machine_reference"]["selected_edge"], "B")
+        self.assertEqual(result["machine_reference"]["manifest_sha256"], sha256(self.manifest_path))
+        self.assertFalse(result["calibration_verified"])
+        self.assertIsNone(result["production_decision"])
+
+    def test_cli_forbids_silent_manual_override_of_recorded_reference(self):
+        self.load()
+        output = self.root / "trials"
+        with redirect_stdout(StringIO()):
+            code = main(
+                [
+                    "--image",
+                    str(self.picture),
+                    "--machine-reference",
+                    str(self.manifest_path),
+                    "--output",
+                    str(output),
+                    "--line",
+                    "50",
+                    "190",
+                    "250",
+                    "190",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

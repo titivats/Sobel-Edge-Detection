@@ -10,6 +10,7 @@ from router_vision.auo6000 import (
     AUO6000Image,
     AUO6000Panel,
     SourceSelectionError,
+    result_files_signature,
     scan_auo6000_dataset,
 )
 
@@ -26,6 +27,18 @@ LEGACY_CSV_HEADER = (
 
 
 class AUO6000DatasetTests(unittest.TestCase):
+    def test_cancelled_source_scan_and_snapshot_stop(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            _, result, _, _ = self._folders(root)
+            (result / "_20260903_120030.csv").write_text(
+                CSV_HEADER + "1,,P.rcp,P,1,4,0,0,True,0,20\n"
+            )
+            with self.assertRaises(InterruptedError):
+                scan_auo6000_dataset(root, cancelled=lambda: True)
+            with self.assertRaises(InterruptedError):
+                result_files_signature(result, cancelled=lambda: True)
+
     def test_changed_csv_during_scan_rejects_inconsistent_dataset(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -67,6 +80,40 @@ class AUO6000DatasetTests(unittest.TestCase):
             with self.assertRaises(SourceSelectionError) as caught:
                 scan_auo6000_dataset(root)
             self.assertEqual(len(caught.exception.candidates), 2)
+
+    def test_complete_machine_pair_takes_priority_over_other_picture_folders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            machine = Path(folder)
+            program = machine / "Sep.Net"
+            data = machine / "SepData"
+            (program / "Picture").mkdir(parents=True)
+            (data / "Picture").mkdir(parents=True)
+            (machine / "other-export/Picture").mkdir(parents=True)
+            (machine / "Picture").mkdir()
+            self._image(program / "Picture/sample.bmp")
+            self._image(machine / "Picture/sample.bmp")
+            self._image(data / "Picture/20260903_120010.bmp")
+            for selected in (machine, program, data, data / "Picture"):
+                with self.subTest(selected=selected):
+                    dataset = scan_auo6000_dataset(selected, require_machine_layout=True)
+                    self.assertEqual(Path(dataset.picture_dir), data / "Picture")
+                    self.assertEqual(
+                        [Path(i.path).name for i in dataset.images], ["20260903_120010.bmp"]
+                    )
+
+    def test_required_machine_layout_rejects_missing_companion_or_picture(self):
+        with tempfile.TemporaryDirectory() as folder:
+            machine = Path(folder)
+            data = machine / "SepData"
+            (data / "Picture").mkdir(parents=True)
+            for selected in (machine, data, data / "Picture"):
+                with self.subTest(selected=selected):
+                    with self.assertRaisesRegex(SourceSelectionError, "Sep.Net"):
+                        scan_auo6000_dataset(selected, require_machine_layout=True)
+            (machine / "Sep.Net").mkdir()
+            (data / "Picture").rmdir()
+            with self.assertRaisesRegex(SourceSelectionError, "Picture"):
+                scan_auo6000_dataset(machine, require_machine_layout=True)
 
     def test_program_without_sibling_data_never_scans_resource_images(self):
         with tempfile.TemporaryDirectory() as folder:

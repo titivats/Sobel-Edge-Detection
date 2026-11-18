@@ -51,14 +51,28 @@ class ProductionStore:
                 "CREATE TABLE IF NOT EXISTS panels ("
                 "panel_key TEXT PRIMARY KEY, route TEXT NOT NULL, signature TEXT NOT NULL, "
                 "state TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, "
-                "status TEXT, payload TEXT, overview TEXT, claim_id TEXT)"
+                "status TEXT, payload TEXT, overview TEXT, claim_id TEXT, result_path TEXT)"
             )
-            if "claim_id" not in {row[1] for row in db.execute("PRAGMA table_info(panels)")}:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(panels)")}
+            if "claim_id" not in columns:
                 db.execute("ALTER TABLE panels ADD COLUMN claim_id TEXT")
+            if "result_path" not in columns:
+                db.execute("ALTER TABLE panels ADD COLUMN result_path TEXT")
+                db.execute(
+                    "UPDATE panels SET result_path=NULLIF(json_extract(payload, "
+                    "'$.result.run.source_path'),'') WHERE json_valid(payload)"
+                )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, panel_key TEXT NOT NULL, signature TEXT NOT NULL, completed_at TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, overview TEXT)"
             )
             db.execute("CREATE INDEX IF NOT EXISTS panels_route_state ON panels(route,state)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS intake_baselines (result_dir TEXT NOT NULL,"
+                " route TEXT NOT NULL, files TEXT NOT NULL, PRIMARY KEY(result_dir,route))"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS attempts_with_overview ON attempts(id DESC) WHERE overview IS NOT NULL"
+            )
 
     def states(self, route):
         """Read the route's claims in one transaction instead of opening a DB per board."""
@@ -69,6 +83,37 @@ class ProductionStore:
                     "SELECT panel_key,state,signature FROM panels WHERE route=?", (route,)
                 )
             }
+
+    def tracked_panels(self, route):
+        with self.connect() as db:
+            return db.execute(
+                "SELECT panel_key,state,signature,result_path FROM panels WHERE route=?", (route,)
+            ).fetchall()
+
+    def legacy_source_hashes(self, key):
+        """Use original evidence for old decisions whose signature only covered images/CSV."""
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM panels WHERE panel_key=?", (key,)).fetchone()
+        if not row or not row[0]:
+            return {}
+        return json.loads(row[0]).get("evidence", {}).get("source_hashes", {})
+
+    def intake_baseline(self, result_dir, route, initial_files):
+        """Only files already archived at the first AUTO start can ever be skipped."""
+        identity = str(result_dir), route
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT files FROM intake_baselines WHERE result_dir=? AND route=?", identity
+            ).fetchone()
+            if row is None:
+                db.execute(
+                    "INSERT OR IGNORE INTO intake_baselines VALUES (?,?,?)",
+                    (*identity, json.dumps(initial_files)),
+                )
+                row = db.execute(
+                    "SELECT files FROM intake_baselines WHERE result_dir=? AND route=?", identity
+                ).fetchone()
+        return {result_dir / name: tuple(stamp) for name, stamp in json.loads(row[0]).items()}
 
     @contextmanager
     def connect(self):
@@ -86,8 +131,9 @@ class ProductionStore:
                 "SELECT state, signature FROM panels WHERE panel_key=?", (key,)
             ).fetchone()
 
-    def claim(self, key, route, signature):
+    def claim(self, key, route, signature, *, result_path=None):
         claim_id = uuid.uuid4().hex
+        result_path = str(Path(result_path).resolve()) if result_path else None
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -95,13 +141,15 @@ class ProductionStore:
             ).fetchone()
             if row and row[0] == "RETRY_APPROVED":
                 db.execute(
-                    "UPDATE panels SET state='PENDING',signature=?,started_at=?,completed_at=NULL,claim_id=? WHERE panel_key=?",
-                    (signature, datetime.now(timezone.utc).isoformat(), claim_id, key),
+                    "UPDATE panels SET state='PENDING',signature=?,started_at=?,completed_at=NULL,"
+                    "claim_id=?,result_path=COALESCE(?,result_path) WHERE panel_key=?",
+                    (signature, datetime.now(timezone.utc).isoformat(), claim_id, result_path, key),
                 )
                 self.owned_claims[key] = claim_id
                 return
             db.execute(
-                "INSERT INTO panels(panel_key,route,signature,state,started_at,claim_id) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO panels(panel_key,route,signature,state,started_at,claim_id,result_path) "
+                "VALUES(?,?,?,?,?,?,?)",
                 (
                     key,
                     route,
@@ -109,6 +157,7 @@ class ProductionStore:
                     "PENDING",
                     datetime.now(timezone.utc).isoformat(),
                     claim_id,
+                    result_path,
                 ),
             )
             self.owned_claims[key] = claim_id
@@ -124,13 +173,15 @@ class ProductionStore:
             if row is None or row[0] != result.run.key:
                 raise ValueError("Result route differs from the claimed board.")
             changed = db.execute(
-                "UPDATE panels SET state='DONE',completed_at=?,status=?,payload=?,overview=? "
+                "UPDATE panels SET state='DONE',completed_at=?,status=?,payload=?,overview=?,"
+                "result_path=COALESCE(result_path,?) "
                 "WHERE panel_key=? AND state='PENDING' AND claim_id=?",
                 (
                     datetime.now(timezone.utc).isoformat(),
                     result.status,
                     payload,
                     overview,
+                    str(Path(result.run.source_path).resolve()) if result.run.source_path else None,
                     key,
                     self.owned_claims.get(key),
                 ),
@@ -146,16 +197,31 @@ class ProductionStore:
             )
         self.owned_claims.pop(key, None)
 
-    def retry_held(self, route):
+    def blocked_board(self, route):
+        with self.connect() as db:
+            return db.execute(
+                "SELECT panel_key,state,result_path FROM panels WHERE route=? AND state IN "
+                "('PENDING','SOURCE_CHANGED') ORDER BY started_at, panel_key LIMIT 1",
+                (route,),
+            ).fetchone()
+
+    def retry_held(self, route, *, blocked_key=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            rows = db.execute(
-                "SELECT panel_key,state FROM panels WHERE route=? AND (state='PENDING' OR status IN ('FAULT','NG')) AND state!='RETRY_APPROVED' ORDER BY started_at DESC LIMIT 1",
-                (route,),
-            ).fetchall()
-            if not rows:
+            if blocked_key is None:
+                row = db.execute(
+                    "SELECT panel_key,state FROM panels WHERE route=? AND (state='PENDING' OR status IN ('FAULT','NG')) AND state!='RETRY_APPROVED' ORDER BY started_at DESC LIMIT 1",
+                    (route,),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    "SELECT panel_key,state FROM panels WHERE route=? AND panel_key=? "
+                    "AND state IN ('PENDING','SOURCE_CHANGED')",
+                    (route, blocked_key),
+                ).fetchone()
+            if not row:
                 raise ValueError("No interrupted / held board is available to retry.")
-            key, state = rows[0]
+            key, state = row
             if state == "PENDING":
                 payload = json.dumps(
                     {

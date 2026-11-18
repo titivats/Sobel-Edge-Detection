@@ -126,21 +126,24 @@ class RecipeSpecTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.window._save_recipe_specs({"missing": {"inner_max_mm": 0.1, "outer_max_mm": 0.2}})
 
-    def test_spec_button_shows_latest_saved_recipe_after_reload(self):
+    def test_spec_button_shows_selected_program_instead_of_latest_other_recipe(self):
+        selected = self.window._settings_model_key()
+        self.window._save_recipe_specs({selected: {"inner_max_mm": 0.05, "outer_max_mm": 0.2}})
         self.window._save_recipe_specs({"A": {"inner_max_mm": 0.05, "outer_max_mm": 0.2}})
         self.window._save_recipe_specs({"B": {"inner_max_mm": 0.1, "outer_max_mm": 0.3}})
         self.window.cfg = AppConfig.load(workflow.ui.CONFIG_PATH)
         self.window._refresh_spec_button()
-        self.assertEqual(self.window._latest_spec_route(), "B")
-        self.assertIn("SPEC | B | INNER ≤ 0.1 / OUTER ≤ 0.3 mm", self.window.btn_spec.text())
+        self.assertEqual(self.window._latest_spec_route(), selected)
+        self.assertIn("SPEC | INNER ≤ 0.05 / OUTER ≤ 0.2 mm", self.window.btn_spec.text())
         with patch.object(workflow.ui, "RecipeSpecDialog") as factory:
             self.window._open_recipe_spec()
-        self.assertEqual(factory.call_args.args[2], "B")
+        self.assertEqual(factory.call_args.args[2], selected)
+        self.assertEqual(list(factory.call_args.args[0]), [selected])
 
     def test_existing_single_spec_is_displayed_without_fabricating_latest(self):
         self.window.cfg.edge_limits_by_route = {"B": {"inner_max_mm": 1.0, "outer_max_mm": 1.0}}
         self.window._refresh_spec_button()
-        self.assertIn("SPEC | B | INNER ≤ 1 / OUTER ≤ 1 mm", self.window.btn_spec.text())
+        self.assertEqual(self.window.btn_spec.text(), "SPEC | NOT SET")
         self.assertFalse(hasattr(self.window, "btn_training_entry"))
 
 

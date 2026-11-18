@@ -50,6 +50,7 @@ def render_prediction_overview(
     tile_context: dict[str, str] | None = None,
     tile_verdicts: dict[str, str] | None = None,
     columns: int | None = None,
+    prepared_images: dict | None = None,
 ) -> np.ndarray:
     """Render every cut point into one Original/Sobel/prediction overview.
 
@@ -93,10 +94,13 @@ def render_prediction_overview(
         y0 = gap + row * (cell_height + gap)
         tile = np.full((cell_height, cell_width, 3), 32, dtype=np.uint8)
 
-        original = read_image(str(detail.path), cv2.IMREAD_COLOR)
-        if original is not None:
-            original = classifier.crop.apply(original)
-        edge = classifier.extractor.edge_map(detail.path, classifier.crop)
+        if prepared_images is not None and detail.path in prepared_images:
+            original, edge = prepared_images[detail.path]
+        else:
+            original = read_image(str(detail.path), cv2.IMREAD_COLOR)
+            if original is not None:
+                original = classifier.crop.apply(original)
+            edge = classifier.extractor.edge_map(detail.path, classifier.crop)
 
         top = 31
         bottom = 24

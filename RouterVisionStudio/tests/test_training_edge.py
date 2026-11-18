@@ -265,6 +265,43 @@ class TrainingEdgeTests(unittest.TestCase):
         self.assertFalse(lower["calibration_verified"])
         self.assertIsNone(lower["production_decision"])
 
+    def test_capture_selects_its_own_slot_with_a_wider_groove_in_the_same_image(self):
+        image = np.full((400, 500, 3), 180, np.uint8)
+        image[104:142] = 0  # Wider groove, separate from the recorded cutter center.
+        image[185:215] = 0
+        image[165:185, 235:250] = 0
+        image[215:235, 255:270] = 0
+        record = self.data["images"][0]
+        projection = record["projection"]
+        projection.update(
+            bit_diameter_mm=0.3,
+            upper_A_px=[[170, 185], [330, 185]],
+            lower_B_px=[[170, 215], [330, 215]],
+        )
+        for vertical in (False, True):
+            if vertical:
+                image = cv2.transpose(image)
+                record["size_px"] = [400, 500]
+                for key in ("reconstructed_nc_xy_mm", "upper_A_px", "lower_B_px"):
+                    projection[key] = [point[::-1] for point in reversed(projection[key])]
+            cv2.imwrite(self.path, image)
+            record["sha256"] = sha256(self.path)
+            self.manifest.write_text(json.dumps(self.data), encoding="utf-8")
+            review = self.review()
+            for side in ("A", "B"):
+                with self.subTest(vertical=vertical, side=side):
+                    result, profile = measure_image_edge(image, review, side)
+                    self.assertTrue(profile.valid)
+                    self.assertEqual(result["measurement_status"], "COMPLETE_ESTIMATE")
+                    self.assertAlmostEqual(result["inner_line_max_mm"], 0.20, places=4)
+            unrelated = image.copy()
+            if vertical:
+                unrelated[:, 160:240] = 180
+            else:
+                unrelated[160:240] = 180
+            with self.assertRaisesRegex(ValueError, "projected cut centerline"):
+                measure_image_edge(unrelated, review, "B")
+
     def test_partial_and_missing_edges_do_not_claim_complete_or_zero_measurement(self):
         image = self.measurement_image()
         image[:, :245] = 0

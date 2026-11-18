@@ -29,11 +29,15 @@ class AppConfig:
     # Saved together with the tested data source by the AVTR Settings workflow.
     expected_images_by_route: dict[str, int] = field(default_factory=dict)
     active_recipe: str = ""
+    # Exact program identity selected and tested in Settings; no cross-recipe fallback.
+    active_program_key: str = ""
+    active_program_recipe: str = ""
+    active_model_sha256: str = ""
     # Operator-entered acceptance limits, kept separate for each production route.
     edge_limits_by_route: dict[str, dict[str, float]] = field(default_factory=dict)
     last_edge_spec_route: str = ""
     # Immutable per-capture reference manifests exported with each new board.
-    # Empty uses the manifest selected in the edge-review workflow.
+    # Live AUTO requires an explicit location.
     capture_manifest_dir: str = ""
     live_poll_seconds: float = 2.0
     live_file_stable_seconds: float = 2.0
@@ -65,6 +69,8 @@ class AppConfig:
     # RELEASE is allowed only when every image is classified GOOD at or above
     # this confidence. Lower-confidence GOOD results fail closed as FAULT/HOLD.
     good_confidence_min: float = 0.95
+    production_jpeg_quality: int = 100
+    production_min_free_mb: int = 256
 
     # Operator-adjustable Sobel preprocessing used by the production model.
     # These values must be revalidated whenever they differ from training.
@@ -102,6 +108,9 @@ class AppConfig:
                         if value is None and key in {
                             "model_dir",
                             "active_recipe",
+                            "active_program_key",
+                            "active_program_recipe",
+                            "active_model_sha256",
                             "last_edge_spec_route",
                             "capture_manifest_dir",
                         }:
@@ -115,6 +124,13 @@ class AppConfig:
         return cfg
 
     def validate(self) -> None:
+        if (
+            type(self.production_jpeg_quality) is not int
+            or not 90 <= self.production_jpeg_quality <= 100
+        ):
+            raise ValueError("Production JPEG quality must be an integer from 90 to 100.")
+        if type(self.production_min_free_mb) is not int or self.production_min_free_mb < 0:
+            raise ValueError("Production disk reserve must be a non-negative integer in MB.")
         defaults = type(self)()
         for item in fields(self):
             value, default = getattr(self, item.name), getattr(defaults, item.name)
@@ -130,6 +146,24 @@ class AppConfig:
                 raise ValueError(f"Invalid configuration field: {item.name}")
         if self.pixel_size_mm <= 0 or not 0.5 <= self.good_confidence_min <= 1:
             raise ValueError("Pixel size must be positive and confidence must be 50% to 100%.")
+        if self.active_model_sha256 and (
+            not self.active_program_key
+            or not re.fullmatch(r"[0-9a-f]{64}", self.active_model_sha256)
+        ):
+            raise ValueError("An approved model needs a program identity and a valid SHA-256.")
+        if self.active_program_key or self.active_program_recipe:
+            from .program_selection import ProgramSelection
+
+            product, _, table = self.active_recipe.partition("|")
+            if (
+                not product
+                or not self.active_program_recipe
+                or self.active_program_key
+                != ProgramSelection(product, self.active_program_recipe, table).key
+            ):
+                raise ValueError(
+                    "Selected program identity does not match its recipe/product/table."
+                )
         if (
             self.live_poll_seconds <= 0
             or self.live_file_stable_seconds < 0

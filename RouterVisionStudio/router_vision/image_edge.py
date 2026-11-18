@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-ALGORITHM_VERSION = "sobel-local-pcb-zero-v6-cut-path-axes"
+ALGORITHM_VERSION = "sobel-local-pcb-zero-v7-capture-slot"
 
 
 def validate_image(image):
@@ -169,6 +169,7 @@ def analyse(
     side="B",
     allow_edge_only=False,
     fit_baseline=True,
+    cut_centerline=None,
 ):
     validate_image(image)
     if side not in ("A", "B"):
@@ -177,6 +178,10 @@ def analyse(
         raise ValueError("Blur must be an odd integer from 1 to 15.")
     if not 0 < fraction < 1 or len(wings) != 2 or not 0.1 < wings[0] < 0.5 < wings[1] < 0.9:
         raise ValueError("Invalid threshold or side-strip fractions.")
+    if cut_centerline is not None:
+        cut_centerline = np.asarray(cut_centerline, dtype=float)
+        if cut_centerline.shape != (2, 2) or not np.isfinite(cut_centerline).all():
+            raise ValueError("Invalid projected cut centerline.")
     if side == "A":
         result = analyse(
             cv2.flip(image, 0),
@@ -186,6 +191,9 @@ def analyse(
             side="B",
             allow_edge_only=allow_edge_only,
             fit_baseline=fit_baseline,
+            cut_centerline=None
+            if cut_centerline is None
+            else cut_centerline * [1, -1] + [0, image.shape[0] - 1],
         )
         height = image.shape[0]
         result["y"] = height - 1 - result["y"]
@@ -203,13 +211,32 @@ def analyse(
     )
     height, width = gray.shape
     x = np.arange(int(width * 0.1), int(width * 0.9))
-    rows = np.median(gray[int(height * 0.25) : int(height * 0.75), x], axis=1)
+    slot_columns = x
+    center_rows = None
+    if cut_centerline is not None:
+        start, finish = cut_centerline[np.argsort(cut_centerline[:, 0])]
+        slot_columns = x[(x >= np.floor(start[0])) & (x <= np.ceil(finish[0]))]
+        if not len(slot_columns) or finish[0] <= start[0]:
+            raise ValueError("Projected cut centerline does not span the image scan.")
+        center_rows = np.rint(np.interp(x, [start[0], finish[0]], [start[1], finish[1]])).astype(
+            int
+        )
+    first_row = int(height * 0.25)
+    rows = np.median(gray[first_row : int(height * 0.75), slot_columns], axis=1)
     low, high = np.percentile(rows, [10, 90])
     candidates = np.flatnonzero(rows < low + 0.25 * (high - low))
     if not len(candidates):
         raise ValueError("No central dark slot found.")
-    runs = np.split(candidates, np.flatnonzero(np.diff(candidates) > 1) + 1)
-    slot = max(runs, key=len) + int(height * 0.25)
+    runs = np.split(candidates + first_row, np.flatnonzero(np.diff(candidates) > 1) + 1)
+    if center_rows is None:
+        slot = max(runs, key=len)
+    else:
+        # The recorded cutter center identifies the groove, never the zero for measuring PCB.
+        low_row, high_row = center_rows.min(), center_rows.max()
+        matches = [run for run in runs if run[0] <= low_row and high_row <= run[-1]]
+        if len(matches) != 1:
+            raise ValueError("No single dark slot contains the projected cut centerline.")
+        slot = matches[0]
     seed, end = int(np.median(slot)), int(slot[-1])
     if len(slot) < 20 or end + 50 >= height:
         raise ValueError("Slot is too narrow or too close to the image border.")
@@ -218,7 +245,8 @@ def analyse(
     dark = np.median(gray[seed - 8 : seed + 9, x], axis=0)
     material = np.median(gray[end + 20 : end + 45, x], axis=0)
     contrast_ok = material - dark >= 10
-    bright = gray[seed : end + 50, x] > dark + fraction * (material - dark)
+    material_threshold = dark + fraction * (material - dark)
+    bright = gray[seed : end + 50, x] > material_threshold
     bright[:, ~contrast_ok] = False
     # Only follow a component joined to the interior PCB band. A detached reflection
     # or dust spot must not become a protrusion, even if its Sobel gradient is strong.
@@ -236,6 +264,12 @@ def analyse(
     for index, column in enumerate(x):
         if not contrast_ok[index]:
             continue
+        if center_rows is not None:
+            center = center_rows[index]
+            if (
+                gray[min(seed, center) : max(seed, center) + 1, column] > material_threshold[index]
+            ).any():
+                continue
         # Threshold identifies the slot exit, not the final measured edge.
         sustained = np.convolve(
             connected[:, index].astype(int), np.ones(5, dtype=int), mode="valid"

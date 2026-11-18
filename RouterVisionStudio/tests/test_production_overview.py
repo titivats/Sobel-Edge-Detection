@@ -138,16 +138,11 @@ class ProductionOverviewTests(unittest.TestCase):
         self.assertIn('QLabel("FINE-TUNE SOBEL EDGE DETECTION")', source)
         self.assertNotIn('QLabel("2. FINE-TUNE SOBEL EDGE DETECTION")', source)
         self.assertIn("QSlider(Qt.Horizontal)", source)
-        self.assertIn('"Blur strength"', source)
-        self.assertIn('"X edge weight"', source)
-        self.assertIn('"Y edge weight"', source)
         self.assertIn('"Edge brightness"', source)
-        self.assertIn('"Noise removal"', source)
         self.assertIn("lbl_workflow_progress", source)
         self.assertIn("QSplitter(Qt.Horizontal)", source)
         self.assertIn("LIVE ORIGINAL / SOBEL COMPARISON", source)
         self.assertIn("SOBEL PARAMETERS", source)
-        self.assertIn("X / Y weights and brightness: 0.001 steps. Other decimals: 0.01.", source)
         self.assertIn("self.slider_sobel_clip.setRange(9000, 10000)", source)
         self.assertIn('QPushButton("RESET PARAMETERS")', source)
         self.assertIn('QPushButton("◀")', source)
@@ -193,14 +188,12 @@ class ProductionOverviewTests(unittest.TestCase):
 
         self.assertEqual(ModelTrainingWorker.__module__, "router_vision.workers")
         self.assertIn("def _train_settings_model", source)
-        self.assertIn("model_file_name(product)", source)
         self.assertIn(
             "Run the test, review predictions against the Original images, then save settings.",
             source,
         )
         self.assertIn("self.settings_classifier", source)
         self.assertIn("def _load_settings_model", source)
-        self.assertIn("No trained Sobel ViT model for ProductId", source)
         self.assertNotIn('QPushButton("OPEN LARGE VIEW")', source)
         self.assertNotIn("CHECK THE ORIGINAL IMAGE", source)
         self.assertIn("vision_workspace = QSplitter(Qt.Horizontal)", source)

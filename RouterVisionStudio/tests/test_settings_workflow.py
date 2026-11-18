@@ -5,6 +5,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tempfile
+import threading
+import time
 import unittest
 from copy import deepcopy
 from dataclasses import asdict
@@ -15,7 +17,7 @@ import cv2
 import numpy as np
 import production_app as ui
 import torch
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -94,19 +96,24 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertEqual(self.window.settings_image_dir, str(self.source))
         self.assertEqual(len(self.window.settings_image_paths), 4)
 
-    def test_unlinked_and_multiple_product_source_is_not_shown_as_ready(self):
+    def test_foreign_unidentified_record_is_not_pooled_into_selected_recipe(self):
         (self.source / "Result" / "_20260903_150000.csv").write_text(
             "SN,ProductId,Result\n3,OTHER,True\n", encoding="utf-8"
         )
         self.window._set_settings_path(str(self.program))
-        self.assertIn("DATA REVIEW REQUIRED", self.window.lbl_auo_files.text())
-        self.assertIn("OTHER", self.window.lbl_auo_warning.text())
+        self.assertIn("READY FOR SOBEL TUNING", self.window.lbl_auo_files.text())
+        self.assertEqual({p.product_id for p in self.window.auo_dataset.panels}, {"PRODUCT-A"})
+        self.assertEqual(len(self.window.auo_dataset.panels), 2)
         self.assertTrue(self.window.btn_continue_sobel.isEnabled())
 
     def test_all_machine_paths_save_resolved_data_and_restore_source(self):
         for selected in (self.program, self.root, self.source, self.source / "Picture"):
             with self.subTest(selected=selected):
                 self.window._set_settings_path(str(selected))
+                self.assertEqual(self.window.txt_settings_path.text(), str(self.root))
+                self.assertEqual(self.window.tbl_auo_folders.item(0, 0).text(), "Sep.Net")
+                self.assertEqual(self.window.tbl_auo_folders.item(0, 1).text(), "READY")
+                self.assertEqual(self.window.tbl_auo_folders.item(1, 0).text(), "SepData")
                 self.model()
                 self.window.trial_input_signature = self.window._trial_signature()
                 self.window._vision_trial_done(
@@ -119,6 +126,17 @@ class SettingsWorkflowTests(unittest.TestCase):
                 self.assertEqual([len(run.pictures) for run in self.window.queue], [2, 2])
                 self.window._set_settings_path(self.window._load_sobel_source_path())
                 self.assertEqual(self.window.settings_image_dir, str(self.source))
+
+    def test_source_selection_protects_both_machine_folders(self):
+        from router_vision.guard import ProtectedPathError, check_write_target
+
+        self.window._set_settings_path(str(self.root))
+        for folder in (self.program, self.source):
+            with self.subTest(folder=folder):
+                with self.assertRaises(ProtectedPathError):
+                    check_write_target(
+                        folder / "output.json", self.window._settings_protected_roots()
+                    )
 
     def approve_trial(self):
         self.model()
@@ -205,7 +223,13 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertFalse(self.window.btn_apply_settings.isEnabled())
 
     def model(self, *, sobel=None, quality=1.0):
-        classifier = CutClassifier(crop=CropBox(0, 0, 100, 80), sobel=sobel, model_key="PRODUCT-A")
+        if not self.window.spin_expected_cuts.value():
+            self.window.spin_expected_cuts.setValue(
+                2
+            )  # The fixture's machine program has two cuts.
+        classifier = CutClassifier(
+            crop=CropBox(0, 0, 100, 80), sobel=sobel, model_key=self.window._settings_model_key()
+        )
         classifier.classes = ["GOOD", "NG"]
         classifier.head = torch.nn.Linear(384, 2).eval()
         classifier.report = TrainReport(
@@ -215,14 +239,14 @@ class SettingsWorkflowTests(unittest.TestCase):
             val_acc=quality,
             per_class={"GOOD": {"n": 1, "correct": 1}, "NG": {"n": 1, "correct": 1}},
         )
-        target = self.window._model_path("PRODUCT-A")
+        target = self.window._model_path(self.window._settings_model_key())
         classifier.save(target)
         self.window.settings_classifier = classifier
         self.window.settings_model_name = target.name
         return classifier
 
     def save_record(self, path, *, label="GOOD", trained=True):
-        target = self.window._model_path("PRODUCT-A")
+        target = self.window._model_path(self.window._settings_model_key())
         output = self.root / (Path(path).stem + ".png")
         output.write_bytes(b"saved")
         record = {
@@ -395,6 +419,88 @@ class SettingsWorkflowTests(unittest.TestCase):
         authenticate.assert_called_once()
         self.assertFalse(self.window.settings_panel.isVisible())
 
+    def test_reopening_loaded_source_with_no_images_does_not_scan_or_render(self):
+        window = self.window
+        window.show()
+        window._set_settings_images([])
+        window.settings_panel.hide()
+        window.slider_edge_gain.setValue(1234)
+        with (
+            patch.object(ui, "SETTINGS_PASSWORD", "secret"),
+            patch.object(ui.QInputDialog, "getText", return_value=("secret", True)),
+            patch.object(ui, "scan_auo6000_dataset", side_effect=AssertionError("repeated scan")),
+            patch.object(window, "_preview_sobel") as preview,
+        ):
+            window._toggle_settings()
+        self.assertTrue(window.settings_panel.isVisible())
+        self.assertEqual(window.settings_workflow.currentIndex(), 0)
+        self.assertEqual(window.slider_edge_gain.value(), 1234)
+        preview.assert_not_called()
+
+    def test_initial_source_load_runs_in_background_and_keeps_data_source_tab(self):
+        window = self.window
+        dataset = window.auo_source_dataset
+        window.auo_source_dataset = None
+        window.show()
+        window.settings_panel.hide()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        thread_ids, ticks = [], []
+
+        def scan(*args, **kwargs):
+            thread_ids.append(threading.get_ident())
+            release.wait(2)
+            return dataset
+
+        with (
+            patch.object(ui, "SETTINGS_PASSWORD", "secret"),
+            patch.object(ui.QInputDialog, "getText", return_value=("secret", True)),
+            patch("router_vision.workers.scan_auo6000_dataset", side_effect=scan),
+        ):
+            try:
+                window._toggle_settings()
+                self.assertTrue(window.settings_panel.isVisible())
+                self.assertTrue(window._settings_job_busy())
+                QTimer.singleShot(10, lambda: ticks.append(True))
+                for _ in range(20):
+                    QTest.qWait(20)
+                    time.sleep(0.002)
+                    self.app.processEvents()
+                    if ticks:
+                        break
+                self.assertEqual(ticks, [True])
+                self.assertNotEqual(thread_ids[0], threading.get_ident())
+            finally:
+                release.set()
+                for _ in range(60):
+                    QTest.qWait(20)
+                    time.sleep(0.002)
+                    if window.settings_source_worker is None:
+                        break
+        self.assertIsNone(window.settings_source_worker)
+        self.assertIs(window.auo_source_dataset, dataset)
+        self.assertEqual(window.settings_workflow.currentIndex(), 0)
+        self.assertTrue(window.settings_workflow.isEnabled())
+
+    def test_sobel_preview_decodes_source_only_once(self):
+        with patch.object(ui, "read_image", wraps=ui.read_image) as reader:
+            self.assertTrue(self.window._preview_sobel())
+        reader.assert_called_once()
+
+    def test_additional_parameters_edit_exact_saved_contract(self):
+        window = self.window
+        editors = dict(window.sobel_parameter_editors)
+        editors[window.slider_sobel_clip].setValue(95.25)
+        editors[window.slider_gradient_x].setValue(0.321)
+        editors[window.slider_gradient_y].setValue(1.234)
+        editors[window.slider_blur_sigma].setValue(7.25)
+        sobel = window._sobel_from_controls()
+        self.assertEqual(sobel.clip_percentile, 95.25)
+        self.assertEqual(sobel.gradient_x_weight, 0.321)
+        self.assertEqual(sobel.gradient_y_weight, 1.234)
+        self.assertEqual(sobel.blur_sigma, 7.25)
+        self.assertFalse(window.settings_trial_approved)
+
     def test_model_preprocessing_is_preserved_and_crop_belongs_to_settings(self):
         classifier = self.model(sobel=SobelConfig(blur_ksize=7))
         self.window.classifier = classifier
@@ -469,16 +575,32 @@ class SettingsWorkflowTests(unittest.TestCase):
 
     def test_compact_editors_preserve_precision_and_follow_loaded_values(self):
         editors = dict(self.window.sobel_parameter_editors)
-        editors[self.window.slider_gradient_x].setValue(1.001)
-        editors[self.window.slider_gradient_y].setValue(1.002)
+        editors[self.window.slider_noise_floor].setValue(18)
         editors[self.window.slider_edge_gain].setValue(1.003)
-        self.assertEqual(self.window.slider_gradient_x.value(), 1001)
-        self.assertEqual(self.window.slider_gradient_y.value(), 1002)
+        self.assertEqual(self.window.slider_noise_floor.value(), 18)
         self.assertEqual(self.window.slider_edge_gain.value(), 1003)
-        editors[self.window.slider_sobel_kernel].setCurrentIndex(3)
+        self.window.slider_sobel_kernel.setValue(3)
         self.assertEqual(self.window._sobel_from_controls().sobel_ksize, 7)
-        self.window.slider_gradient_x.setValue(1234)
-        self.assertEqual(editors[self.window.slider_gradient_x].value(), 1.234)
+        self.assertEqual(editors[self.window.slider_sobel_kernel].currentText(), "7")
+        editors[self.window.slider_sobel_kernel].setCurrentIndex(1)
+        editors[self.window.slider_sobel_blur].setCurrentIndex(1)
+        self.assertEqual(self.window._sobel_from_controls().sobel_ksize, 3)
+        self.assertEqual(self.window._sobel_from_controls().blur_ksize, 3)
+        self.window.slider_edge_gain.setValue(1234)
+        self.assertEqual(editors[self.window.slider_edge_gain].value(), 1.234)
+        self.assertEqual(
+            set(editors),
+            {
+                self.window.slider_sobel_blur,
+                self.window.slider_sobel_kernel,
+                self.window.slider_noise_floor,
+                self.window.slider_edge_gain,
+                self.window.slider_sobel_clip,
+                self.window.slider_gradient_x,
+                self.window.slider_gradient_y,
+                self.window.slider_blur_sigma,
+            },
+        )
 
     def test_sobel_controls_use_one_column_and_actions_follow_requested_order(self):
         window = self.window
@@ -551,9 +673,9 @@ class SettingsWorkflowTests(unittest.TestCase):
 
     def test_navigation_consumes_pending_sobel_preview_without_timer_redraw(self):
         window = self.window
-        original = ui.FeatureExtractor.edge_map
+        original = ui.FeatureExtractor.edge_map_array
         with patch.object(
-            ui.FeatureExtractor, "edge_map", autospec=True, side_effect=original
+            ui.FeatureExtractor, "edge_map_array", autospec=True, side_effect=original
         ) as edge_map:
             window.sobel_preview_timer.start()
             window.btn_next_image.click()
@@ -591,7 +713,7 @@ class SettingsWorkflowTests(unittest.TestCase):
         from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
 
-        slider = self.window.slider_gradient_x
+        slider = self.window.slider_edge_gain
         editor = dict(self.window.sobel_parameter_editors)[slider]
         slider.setValue(1000)
         for delta, expected in ((120, 1001), (-120, 1000)):
@@ -703,7 +825,9 @@ class SettingsWorkflowTests(unittest.TestCase):
         path = self.window.settings_image_paths[0]
         self.save_record(path, trained=False)
         previous = deepcopy(self.window.sobel_records)
-        self.window.training_model_target = self.window._model_path("PRODUCT-A")
+        self.window.training_model_target = self.window._model_path(
+            self.window._settings_model_key()
+        )
         self.window.training_paths_in_progress = [path]
         self.window.training_input_signatures = {path: self.window._source_signature(path)}
         with patch.object(self.window, "_save_sobel_records", side_effect=OSError("disk full")):
@@ -752,7 +876,7 @@ class SettingsWorkflowTests(unittest.TestCase):
 
     def test_quality_failure_keeps_existing_model_untouched(self):
         classifier = self.model()
-        target = self.window._model_path("PRODUCT-A")
+        target = self.window._model_path(self.window._settings_model_key())
         previous = target.read_bytes()
         self.window.training_model_target = target
         classifier.report.val_acc = 0.375
@@ -770,7 +894,7 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.assertTrue(self.window._apply_settings())
         self.assertEqual(self.window.cmb_recipe.currentText(), "PRODUCT-A")
         self.assertEqual([len(run.pictures) for run in self.window.queue], [2, 2])
-        self.assertEqual(self.window.classifier.model_key, "PRODUCT-A")
+        self.assertEqual(self.window.classifier.model_key, self.window._settings_model_key())
         self.assertEqual(self.window.recipe_specs["PRODUCT-A"]["expected"], 2)
         self.assertEqual(self.window.link.state, GateState.FAULT)
         self.window._rebuild_queue()
@@ -822,6 +946,25 @@ class SettingsWorkflowTests(unittest.TestCase):
                     if width == 1920:
                         self.assertGreater(window.lbl_trial_preview.pixmap().height(), 300)
                     self.assertEqual(window.vision_workspace.orientation(), Qt.Horizontal)
+                    if width == 1920:
+                        for card, note, button in (
+                            (
+                                window.training_train_card,
+                                window.lbl_model_training_status,
+                                window.btn_train_model,
+                            ),
+                            (
+                                window.training_test_card,
+                                window.training_test_card.layout().itemAt(1).widget(),
+                                window.btn_trial,
+                            ),
+                        ):
+                            gap = (
+                                button.mapTo(card, button.rect().topLeft()).y()
+                                - note.mapTo(card, note.rect().bottomRight()).y()
+                            )
+                            self.assertGreaterEqual(gap, 0)
+                            self.assertLessEqual(gap, 10)
                     controls = window.vision_workflow_scroll.viewport()
                     for button in (
                         window.btn_train_model,

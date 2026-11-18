@@ -1,0 +1,15 @@
+AVTR uses CPython, PyTorch, OpenCV, NumPy, Qt for Python, Qt and the DINOv2 ViT-S/14 model.
+
+CPython's terms are in _runtime/LICENSE.txt. Python wheel metadata, copyrights and license
+files are in _runtime/Lib/site-packages/*dist-info/. DINOv2's Apache license and model
+card are in its repository directory under _runtime/torch/hub/.
+
+The Qt Core, GUI, Widgets and SVG libraries, PySide6 and Shiboken6 are distributed as
+replaceable shared libraries. Their upstream source distributions can be found at
+https://download.qt.io/archive/qt/6.11/6.11.2/submodules/
+and https://download.qt.io/official_releases/QtForPython/pyside6/ .
+The LGPL version 3 and GPL version 3 texts are included in this directory. The shared
+libraries can be replaced in _runtime/Lib/site-packages/PySide6 and shiboken6.
+
+The pinned DINOv2 source is available from
+https://github.com/facebookresearch/dinov2/tree/7764ea0f912e53c92e82eb78a2a1631e92725fc8 .

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QLocale, QLockFile, Qt, QTimer
+from PySide6.QtCore import QEvent, QLocale, QLockFile, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -77,7 +78,9 @@ from router_vision.model import (
     CutClassifier,
     FeatureExtractor,
     SobelConfig,
+    approved_model_path,
     model_quality_error,
+    store_approved_model,
 )
 from router_vision.overview import letterbox
 from router_vision.overview import render_prediction_overview as render_prediction_overview
@@ -87,12 +90,18 @@ from router_vision.production import (
     ImageDecision,
     PanelDecision,
 )
-from router_vision.production_evidence import decision_image, save_image, verify_sources
+from router_vision.production_evidence import decision_image, save_image, save_json, verify_sources
 from router_vision.production_measurement import (
     file_fingerprint,
 )
 from router_vision.production_store import ProductionStore, panel_key
 from router_vision.production_style import APP_STYLE, COLORS, STATE_TEXT
+from router_vision.program_selection import (
+    ProgramSelection,
+    available_programs,
+    recipe_name,
+    select_program,
+)
 from router_vision.recipe_spec_ui import RecipeSpecDialog, validated_limits
 from router_vision.reference_ui import ReferenceMeasurementDialog
 from router_vision.routes import (
@@ -103,6 +112,7 @@ from router_vision.routes import (
 from router_vision.routes import (
     model_file_name as model_file_name,
 )
+from router_vision.runtime_log import close_runtime_log, log_event, open_runtime_log
 from router_vision.toolpath import find_recipe
 from router_vision.training_edge import (
     confirmation_key,
@@ -117,6 +127,7 @@ from router_vision.workers import (
 )
 from router_vision.workers import (
     LiveScanWorker,
+    SettingsSourceWorker,
 )
 from router_vision.workers import (
     ModelTrainingWorker as ModelTrainingWorker,
@@ -298,6 +309,8 @@ class MainWindow(QMainWindow):
             raise ValueError(
                 "Another AVTR instance is using this configuration. Close it before opening another."
             )
+        self.runtime_logger = open_runtime_log(CONFIG_PATH.parent / "logs", self.cfg)
+        log_event(self.runtime_logger, "application.started", config=str(CONFIG_PATH))
         self.link = SimulatedConveyorLink()
         self.link.connect()
         self.classifier: CutClassifier | None = None
@@ -322,6 +335,7 @@ class MainWindow(QMainWindow):
         self.live_source = None
         self.production_store = None
         self.active_claim = None
+        self.held_board = None
         self.settings_worker: VisionTrialWorker | None = None
         self.training_worker: ModelTrainingWorker | None = None
         self.training_paths_in_progress: list[str] = []
@@ -346,6 +360,10 @@ class MainWindow(QMainWindow):
         self.settings_image_path = ""
         self.settings_image_paths: list[str] = []
         self.auo_dataset: AUO6000Dataset | None = None
+        self.auo_source_dataset: AUO6000Dataset | None = None
+        self.settings_programs = {}
+        self._selected_settings_program_key = ""
+        self.settings_source_worker = None
         self.settings_image_metadata: dict[str, AUO6000Image] = {}
         self.sobel_records = self._load_sobel_records()
         self.edge_review = self._load_edge_review_state()
@@ -480,7 +498,6 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.lbl_active_product)
 
         control_layout.addStretch(1)
-        control_layout.addWidget(self.btn_spec)
         control_layout.addWidget(self.btn_settings)
         content_layout.addWidget(controls)
 
@@ -507,12 +524,6 @@ class MainWindow(QMainWindow):
         self.spin_interval.setRange(0.5, 30.0)
         self.spin_interval.setValue(1.0)
         self.spin_interval.setSuffix(" seconds after PASS")
-        self.btn_capture_source = QPushButton("CAPTURE DATA")
-        self.btn_capture_source.setObjectName("outline")
-        self.btn_capture_source.clicked.connect(self._select_capture_source)
-        self.btn_retry_board = QPushButton("RETRY HELD BOARD")
-        self.btn_retry_board.setObjectName("outline")
-        self.btn_retry_board.clicked.connect(self._retry_held_board)
         self.lbl_dataset = QLabel("")
         self.lbl_dataset.setStyleSheet("color:#4b5563;")
         self.lbl_dataset.setWordWrap(True)
@@ -538,7 +549,7 @@ class MainWindow(QMainWindow):
         self.slider_sobel_blur.setSingleStep(1)
         self.slider_sobel_blur.setPageStep(1)
         self.slider_blur_sigma = QSlider(Qt.Horizontal)
-        self.slider_blur_sigma.setRange(0, 500)
+        self.slider_blur_sigma.setRange(0, 1000)
         self.slider_blur_sigma.setSingleStep(1)
         self.slider_blur_sigma.setPageStep(10)
         self.slider_sobel_kernel = QSlider(Qt.Horizontal)
@@ -583,6 +594,8 @@ class MainWindow(QMainWindow):
             self.lbl_edge_gain_value,
             self.lbl_noise_floor_value,
         ):
+            value_label.setParent(self)
+            value_label.hide()
             value_label.setAlignment(Qt.AlignCenter)
             value_label.setMinimumWidth(62)
             value_label.setStyleSheet(
@@ -599,6 +612,8 @@ class MainWindow(QMainWindow):
             self.slider_edge_gain,
             self.slider_noise_floor,
         ):
+            slider.setParent(self)
+            slider.hide()
             slider.valueChanged.connect(self._sobel_parameter_changed)
         self.spin_confidence = QDoubleSpinBox()
         self.spin_confidence.setRange(50.0, 100.0)
@@ -624,7 +639,7 @@ class MainWindow(QMainWindow):
         self.txt_settings_path = QLineEdit()
         self.txt_settings_path.setReadOnly(True)
         self.txt_settings_path.setPlaceholderText(
-            "Select Sep.Net, SepData, Picture or their parent folder"
+            "Select the machine folder containing Sep.Net and SepData"
         )
         self.lbl_settings_image_count = QLabel("0 PANELS | 0 IMAGES")
         self.lbl_settings_image_count.setStyleSheet(
@@ -719,6 +734,36 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(source_header)
         source_layout.addLayout(image_row)
 
+        program_row = QHBoxLayout()
+        program_row.addWidget(QLabel("RECIPE / PROGRAM"))
+        self.cmb_settings_recipe = QComboBox()
+        self.cmb_settings_recipe.setMinimumWidth(300)
+        self.cmb_settings_recipe.addItem("ALL SOURCE IMAGES / SELECT RECIPE", "")
+        self.cmb_settings_recipe.currentIndexChanged.connect(self._settings_recipe_changed)
+        program_row.addWidget(self.cmb_settings_recipe, 1)
+        program_row.addWidget(self.btn_spec)
+        source_layout.addLayout(program_row)
+        capture_row = QHBoxLayout()
+        capture_row.addWidget(QLabel("CUTs in machine program"))
+        self.spin_expected_cuts = QSpinBox()
+        self.spin_expected_cuts.setRange(0, 2_147_483_647)
+        self.spin_expected_cuts.setSpecialValueText("Enter count")
+        self.spin_expected_cuts.setEnabled(False)
+        self.spin_expected_cuts.valueChanged.connect(self._invalidate_settings_trial)
+        capture_row.addWidget(self.spin_expected_cuts)
+        self.btn_capture_source = QPushButton("CAPTURE JSON FOLDER")
+        self.btn_capture_source.clicked.connect(self._select_capture_source)
+        capture_row.addWidget(self.btn_capture_source)
+        self.capture_path_label = QLineEdit(self.cfg.capture_manifest_dir)
+        self.capture_path_label.setReadOnly(True)
+        self.capture_path_label.setPlaceholderText("Select the folder receiving per-CUT JSON")
+        capture_row.addWidget(self.capture_path_label, 1)
+        self.btn_retry_board = QPushButton("RETRY HELD BOARD")
+        self.btn_retry_board.clicked.connect(self._retry_held_board)
+        self.btn_retry_board.hide()
+        capture_row.addWidget(self.btn_retry_board)
+        source_layout.addLayout(capture_row)
+
         self.lbl_auo_files = QLabel("SELECT AN AUO6000 DATA SOURCE TO CONTINUE")
         self.lbl_auo_files.setAlignment(Qt.AlignCenter)
         self.lbl_auo_files.setWordWrap(True)
@@ -781,7 +826,7 @@ class MainWindow(QMainWindow):
         self.tbl_auo_folders.setSelectionMode(QAbstractItemView.NoSelection)
         self.tbl_auo_folders.setFocusPolicy(Qt.NoFocus)
         self.tbl_auo_folders.setAlternatingRowColors(True)
-        self.tbl_auo_folders.setFixedHeight(172)
+        self.tbl_auo_folders.setFixedHeight(232)
         folder_header = self.tbl_auo_folders.horizontalHeader()
         folder_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         folder_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -799,8 +844,6 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(self.lbl_auo_warning)
         source_layout.addStretch(1)
         continue_row = QHBoxLayout()
-        continue_row.addWidget(self.btn_capture_source)
-        continue_row.addWidget(self.btn_retry_board)
         continue_row.addStretch(1)
         self.btn_continue_sobel = QPushButton("CONTINUE TO SOBEL TUNING")
         self.btn_continue_sobel.setObjectName("primary")
@@ -904,13 +947,17 @@ class MainWindow(QMainWindow):
         parameter_panel = QFrame()
         self.sobel_parameter_panel = parameter_panel
         parameter_panel.setObjectName("settingsCard")
-        parameter_panel.setMinimumWidth(440)
+        parameter_panel.setMinimumWidth(320)
+        parameter_panel.setMaximumWidth(420)
         parameter_panel.setMinimumHeight(166)
         parameter_layout = QVBoxLayout(parameter_panel)
         parameter_layout.setContentsMargins(10, 8, 10, 10)
         parameter_title = QLabel("SOBEL PARAMETERS")
         parameter_title.setStyleSheet("color:#1d4ed8; font-weight:800;")
-        parameter_hint = QLabel("X / Y weights and brightness: 0.001 steps. Other decimals: 0.01.")
+        parameter_hint = QLabel(
+            "Reduce Edge smoothing and Edge detail size for thinner lines. "
+            "Edge brightness increases line brightness; Noise removal removes faint pixels."
+        )
         parameter_hint.setWordWrap(True)
         parameter_hint.setStyleSheet("color:#64748b; font-size:9pt;")
         parameter_layout.addWidget(parameter_title)
@@ -925,43 +972,28 @@ class MainWindow(QMainWindow):
         sobel_parameters.setContentsMargins(0, 2, 0, 2)
         sobel_parameters.setHorizontalSpacing(6)
         sobel_parameters.setVerticalSpacing(4)
-        # One ordered list defines the controls, help text and processing sequence.
+        sobel_parameters.setAlignment(Qt.AlignTop)
+        # Keep the stored Sobel contract and expose controls that affect line visibility.
         parameter_specs = (
             (
-                "Blur size",
+                "Edge smoothing",
                 self.slider_sobel_blur,
                 self.lbl_sobel_blur_value,
-                "Smooth small noise before detecting edges.",
+                "Gaussian blur size. Lower values preserve fine detail; higher values smooth noise. "
+                "Try 3 instead of 7 for a less blurred edge.",
             ),
             (
-                "Blur strength",
-                self.slider_blur_sigma,
-                self.lbl_blur_sigma_value,
-                "Gaussian sigma; AUTO chooses strength from the blur size.",
-            ),
-            (
-                "Sobel kernel",
+                "Edge detail",
                 self.slider_sobel_kernel,
                 self.lbl_sobel_kernel_value,
-                "Edge detector size: larger values produce a broader edge response.",
+                "Sobel kernel size. 3 detects finer, thinner lines than 7, "
+                "but may also show more background noise.",
             ),
             (
-                "X edge weight",
-                self.slider_gradient_x,
-                self.lbl_gradient_x_value,
-                "Weight for left/right intensity changes.",
-            ),
-            (
-                "Y edge weight",
-                self.slider_gradient_y,
-                self.lbl_gradient_y_value,
-                "Weight for top/bottom intensity changes.",
-            ),
-            (
-                "Edge normalization",
-                self.slider_sobel_clip,
-                self.lbl_sobel_clip_value,
-                "Percentile used to normalize strong edges to white.",
+                "Noise removal",
+                self.slider_noise_floor,
+                self.lbl_noise_floor_value,
+                "Remove faint background noise so strong edge lines stand out. Reduce if fine edges disappear.",
             ),
             (
                 "Edge brightness",
@@ -970,10 +1002,28 @@ class MainWindow(QMainWindow):
                 "Brightness gain applied after edge normalization.",
             ),
             (
-                "Noise removal",
-                self.slider_noise_floor,
-                self.lbl_noise_floor_value,
-                "Remove weak edge pixels below this intensity.",
+                "Edge contrast",
+                self.slider_sobel_clip,
+                self.lbl_sobel_clip_value,
+                "Normalization percentile. Lower values brighten weaker lines but can saturate strong edges.",
+            ),
+            (
+                "Horizontal edges",
+                self.slider_gradient_y,
+                self.lbl_gradient_y_value,
+                "Strength of horizontal boundaries (Y gradient). Keep above zero for horizontal PCB cuts.",
+            ),
+            (
+                "Vertical edges",
+                self.slider_gradient_x,
+                self.lbl_gradient_x_value,
+                "Strength of vertical boundaries (X gradient). Keep above zero for vertical PCB cuts.",
+            ),
+            (
+                "Smoothing spread",
+                self.slider_blur_sigma,
+                self.lbl_blur_sigma_value,
+                "Gaussian sigma. 0 selects automatic spread; active when Edge smoothing is larger than 1.",
             ),
         )
         self.sobel_parameters_layout = sobel_parameters
@@ -992,8 +1042,8 @@ class MainWindow(QMainWindow):
         sobel_workspace.addWidget(preview_panel)
         sobel_workspace.addWidget(parameter_panel)
         sobel_workspace.setStretchFactor(0, 3)
-        sobel_workspace.setStretchFactor(1, 2)
-        sobel_workspace.setSizes([1100, 700])
+        sobel_workspace.setStretchFactor(1, 0)
+        sobel_workspace.setSizes([1400, 360])
         sobel_layout.addWidget(sobel_workspace, 1)
         training_continue_row = QHBoxLayout()
         self.btn_sobel_edge = QPushButton("SELECT PCB EDGE A/B")
@@ -1119,6 +1169,7 @@ class MainWindow(QMainWindow):
         vision_workspace.splitterMoved.connect(lambda *_: self._fit_trial_preview())
 
         review_card = QFrame()
+        self.training_review_card = review_card
         review_card.setObjectName("sourceCard")
         review_layout = QVBoxLayout(review_card)
         review_layout.setContentsMargins(10, 9, 10, 10)
@@ -1154,7 +1205,9 @@ class MainWindow(QMainWindow):
         label_layout.addWidget(self.lbl_label_progress)
 
         train_card = QFrame()
+        self.training_train_card = train_card
         train_card.setObjectName("sourceCard")
+        train_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         train_layout = QVBoxLayout(train_card)
         train_layout.setContentsMargins(11, 8, 11, 8)
         train_layout.setSpacing(6)
@@ -1184,7 +1237,9 @@ class MainWindow(QMainWindow):
         train_layout.addWidget(self.btn_train_model)
 
         test_card = QFrame()
+        self.training_test_card = test_card
         test_card.setObjectName("sourceCard")
+        test_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         test_layout = QVBoxLayout(test_card)
         test_layout.setContentsMargins(11, 8, 11, 8)
         test_layout.setSpacing(6)
@@ -1209,7 +1264,7 @@ class MainWindow(QMainWindow):
 
         workflow_content = QWidget()
         workflow_layout = QVBoxLayout(workflow_content)
-        workflow_layout.setContentsMargins(1, 1, 5, 1)
+        workflow_layout.setContentsMargins(10, 9, 10, 10)
         workflow_layout.setSpacing(8)
         workflow_layout.addWidget(self.lbl_trial_result)
         workflow_layout.addWidget(train_card)
@@ -1387,18 +1442,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(page)
 
     def _latest_spec_route(self) -> str:
-        saved = self.cfg.edge_limits_by_route
-        if not isinstance(saved, dict):
-            return ""
-        if self.cfg.last_edge_spec_route in saved:
-            return self.cfg.last_edge_spec_route
-        if len(saved) == 1:
-            return next(iter(saved))
-        active = self.cmb_recipe.currentText()
-        return active if active in saved else ""
+        return self._settings_model_key()
 
     def _refresh_spec_button(self) -> None:
         route = self._latest_spec_route()
+        self.btn_spec.setEnabled(
+            bool(route)
+            and not self.auto_running
+            and self.worker is None
+            and not self._settings_job_busy()
+        )
         record = self.cfg.edge_limits_by_route.get(route) if route else None
         try:
             if not isinstance(record, dict):
@@ -1409,11 +1462,10 @@ class MainWindow(QMainWindow):
             self.btn_spec.setToolTip("Set Max Inner / Max Outer in mm for a recipe.")
             return
         self.btn_spec.setText(
-            f"SPEC | {route} | "
-            f"INNER ≤ {limits['inner_max_mm']:g} / OUTER ≤ {limits['outer_max_mm']:g} mm"
+            f"SPEC | INNER ≤ {limits['inner_max_mm']:g} / OUTER ≤ {limits['outer_max_mm']:g} mm"
         )
         self.btn_spec.setToolTip(
-            f"Last saved recipe: {route}\n"
+            f"Selected recipe: {self.cmb_settings_recipe.currentText()}\n"
             f"Max Inner: {limits['inner_max_mm']:g} mm\n"
             f"Max Outer: {limits['outer_max_mm']:g} mm"
         )
@@ -1421,21 +1473,19 @@ class MainWindow(QMainWindow):
     def _open_recipe_spec(self) -> None:
         if self.auto_running or self.worker is not None or self._settings_job_busy():
             return
-        recipes = {}
-        for key, spec in self.recipe_specs.items():
-            name = str(spec.get("recipe") or spec.get("product") or key)
-            recipes[key] = f"{name}  |  {key}" if name != key else key
+        program = self.settings_programs.get(self.cmb_settings_recipe.currentData())
+        if program is None or not program.product:
+            return
+        recipes = {program.key: program.caption}
         saved = self.cfg.edge_limits_by_route
-        if isinstance(saved, dict):
-            for key in saved:
-                recipes.setdefault(key, key)
         dialog = RecipeSpecDialog(
             recipes,
             saved,
-            self._latest_spec_route() or self.cmb_recipe.currentText(),
+            program.key,
             self._save_recipe_specs,
             self,
         )
+        dialog.recipe.setEnabled(False)
         try:
             dialog.exec()
         finally:
@@ -1451,7 +1501,11 @@ class MainWindow(QMainWindow):
             raise ValueError("Saved recipe SPEC data is invalid.")
         updated = dict(stored)
         for key, limits in changes.items():
-            if key not in self.recipe_specs and key not in stored:
+            if (
+                key not in self.settings_programs
+                and key not in self.recipe_specs
+                and key not in stored
+            ):
                 raise ValueError("The selected recipe is no longer available.")
             updated[key] = validated_limits(limits.get("inner_max_mm"), limits.get("outer_max_mm"))
         latest = selected_route if selected_route in changes else next(reversed(changes))
@@ -1471,12 +1525,14 @@ class MainWindow(QMainWindow):
             return
         candidate = replace(self.cfg, capture_manifest_dir=directory)
         try:
+            check_write_target(CONFIG_PATH, self._settings_protected_roots())
             candidate.save(CONFIG_PATH)
         except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.warning(self, "Capture data not saved", str(exc))
             return
         self.cfg = candidate
         self.live_source = None
+        self.capture_path_label.setText(directory)
         self.lbl_detail.setText(f"Capture records: {directory}")
 
     def _retry_held_board(self) -> None:
@@ -1490,7 +1546,10 @@ class MainWindow(QMainWindow):
         try:
             if self.production_store is None:
                 raise ValueError("Production history is unavailable.")
-            self.production_store.retry_held(self.cmb_recipe.currentText())
+            route = self.cmb_recipe.currentText()
+            if not self.held_board or self.held_board[0] != route:
+                raise ValueError("Reopen Settings to review the held board.")
+            self.production_store.retry_held(route, blocked_key=self.held_board[1])
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Retry unavailable", str(exc))
             return
@@ -1498,6 +1557,8 @@ class MainWindow(QMainWindow):
             "Held board retry requested. Close SETTING, press ACK / RESET, then START AUTO."
         )
         self.live_source = None
+        self.held_board = None
+        self.btn_retry_board.hide()
         self._refresh_gate()
 
     def _restore_production_history(self) -> None:
@@ -1523,9 +1584,12 @@ class MainWindow(QMainWindow):
                     continue
                 self.image_pixmap = pixmap
                 verdict, reason = verdict_for(result)
-                self._append_log(result, verdict, reason, payload["evidence"].get("elapsed_ms", 0))
-                self.table.item(0, 0).setText(
-                    datetime.fromisoformat(completed).astimezone().strftime("%H:%M:%S")
+                self._append_log(
+                    result,
+                    verdict,
+                    reason,
+                    payload["evidence"].get("elapsed_ms", 0),
+                    completed=datetime.fromisoformat(completed),
                 )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.link.fault(f"Cannot restore production history: {exc}")
@@ -1549,12 +1613,11 @@ class MainWindow(QMainWindow):
         self.live_source = None
         result_dir = Path(self.cfg.result_dir)
         picture_dir = Path(self.cfg.picture_dir)
-        if not result_dir.exists() or not picture_dir.exists():
-            self._dataset_load_failed("dataset path missing; check config.json")
-            QMessageBox.critical(
-                self,
-                "Dataset missing",
-                f"Picture: {picture_dir}\nResult: {result_dir}\n\nUpdate config.json before running.",
+        if not result_dir.is_dir() or not picture_dir.is_dir():
+            self._dataset_load_failed(
+                "Production data path is unavailable. Open SETTING > 1 DATA SOURCE, "
+                "select the machine folder, then test and save Settings. "
+                f"Picture: {picture_dir}; Result: {result_dir}"
             )
             self._refresh_gate()
             return False
@@ -1587,27 +1650,40 @@ class MainWindow(QMainWindow):
                     )
                     attach_pictures(runs, pictures)
                 for run in runs:
+                    if self.cfg.active_program_key and (
+                        run.key != self.cfg.active_recipe
+                        or recipe_name(run.recipe) != recipe_name(self.cfg.active_program_recipe)
+                    ):
+                        continue
                     if run.key and run.product_id.strip():
                         self.runs_by_key[run.key].append(run)
         except (OSError, SourceSelectionError) as exc:
             self._dataset_load_failed(f"cannot load dataset: {exc}")
             return False
 
-        for key, runs in self.runs_by_key.items():
-            first = runs[0]
-            legacy = SUPPORTED.get(key, {})
-            self.recipe_specs[key] = {
-                "product": first.product_id.strip(),
-                "recipe": first.recipe.strip(),
-                "table": first.table.strip(),
-                "expected": int(self.cfg.expected_images_by_route.get(key, 0))
-                or int(legacy.get("expected", 0))
-                or (inferred_expected_images(runs) if DEMO_MODE else 0),
+        if self.cfg.active_program_key and not DEMO_MODE:
+            route = self.cfg.active_recipe
+            product, _, table = route.partition("|")
+            self.recipe_specs[route] = {
+                "product": product,
+                "table": table,
+                "recipe": self.cfg.active_program_recipe,
+                "expected": self.cfg.expected_images_by_route.get(self.cfg.active_program_key, 0),
             }
-
+        else:
+            for key, runs in self.runs_by_key.items():
+                first = runs[0]
+                self.recipe_specs[key] = {
+                    "product": first.product_id.strip(),
+                    "recipe": first.recipe.strip(),
+                    "table": first.table.strip(),
+                    "expected": self.cfg.expected_images_by_route.get(key, 0)
+                    or SUPPORTED.get(key, {}).get("expected", 0)
+                    or (inferred_expected_images(runs) if DEMO_MODE else 0),
+                }
         self.cmb_recipe.blockSignals(True)
         self.cmb_recipe.clear()
-        self.cmb_recipe.addItems(sorted(self.runs_by_key))
+        self.cmb_recipe.addItems(sorted(self.recipe_specs))
         if previous_key:
             selected = self.cmb_recipe.findText(previous_key)
             if selected >= 0:
@@ -1682,7 +1758,7 @@ class MainWindow(QMainWindow):
         self.btn_next.setEnabled(bool(runs) and expected > 0 and self.worker is None)
         if self.classifier is None:
             self.link.fault(self.model_error)
-        elif not runs:
+        elif not runs and not (self.cfg.active_program_key and key == self.cfg.active_recipe):
             self.link.fault("no runs match the selected recipe/day")
         elif expected <= 0:
             self.link.fault("expected cut-point count is ambiguous; inspection is blocked")
@@ -1720,7 +1796,7 @@ class MainWindow(QMainWindow):
 
     def _settings_product_id(self) -> str:
         """Return the single ProductId represented by the selected AUO6000 path."""
-        if self.auo_dataset is None:
+        if self.auo_dataset is None or not self._settings_model_key():
             return ""
         products = sorted(
             {
@@ -1730,6 +1806,11 @@ class MainWindow(QMainWindow):
             }
         )
         return products[0] if len(products) == 1 else ""
+
+    def _settings_model_key(self) -> str:
+        key = self.cmb_settings_recipe.currentData()
+        program = self.settings_programs.get(key)
+        return program.key if program is not None and program.product else ""
 
     def _load_settings_model(self) -> None:
         """Load only a model that belongs to the AUO6000 settings data source."""
@@ -1756,11 +1837,11 @@ class MainWindow(QMainWindow):
         model_folder = (
             Path(self.cfg.model_dir) if self.cfg.model_dir.strip() else APP_DIR / "models"
         )
-        exact_model = model_folder / model_file_name(product)
+        exact_model = model_folder / model_file_name(self._settings_model_key())
         candidates = [exact_model] if exact_model.is_file() else []
         if not candidates:
             self.settings_model_error = (
-                f"No trained Sobel ViT model for ProductId {product}. "
+                f"No trained Sobel ViT model for {self.cmb_settings_recipe.currentText()}. "
                 "Label GOOD/NG images and train the model first."
             )
             self._refresh_trial_model_status()
@@ -1770,7 +1851,7 @@ class MainWindow(QMainWindow):
         rejected: list[str] = []
         for path in candidates:
             try:
-                classifier = CutClassifier.load(path, expected_model_key=product)
+                classifier = CutClassifier.load(path, expected_model_key=self._settings_model_key())
                 if set(classifier.classes) != {"GOOD", "NG"}:
                     raise ValueError("classes must be exactly GOOD and NG")
                 quality_error = model_quality_error(classifier.report)
@@ -1800,22 +1881,16 @@ class MainWindow(QMainWindow):
             self._apply_sobel_to_classifier()
             return
         self.classifier = None
-        product = str(self.recipe_specs.get(key, {}).get("product", ""))
-        product = product.strip() or product_from_route_key(key)
-        path = self._model_path(product)
-        legacy_path = self._model_path(key)
-        if not path.exists() and legacy_path != path and legacy_path.exists():
-            path = legacy_path
-        if not path.exists():
-            self.model_error = f"Sobel model missing: {path.name}; retrain before production"
+        bound_program = self.cfg.active_program_key if key == self.cfg.active_recipe else ""
+        if not bound_program or not self.cfg.active_model_sha256:
+            self.model_error = "Select the program, run its model test and save Settings."
             return
         try:
-            model_hash = sha256(path)
+            path = approved_model_path(
+                self._model_path(bound_program), self.cfg.active_model_sha256
+            )
             classifier = CutClassifier.load(
-                path,
-                expected_model_key=key
-                if path == legacy_path and path != self._model_path(product)
-                else product,
+                path, expected_model_key=bound_program, expected_sha256=self.cfg.active_model_sha256
             )
             quality_error = model_quality_error(classifier.report)
             if quality_error:
@@ -1829,14 +1904,14 @@ class MainWindow(QMainWindow):
         self.classifier = classifier
         self.active_model_path = path
         try:
-            unchanged = sha256(path) == model_hash
+            unchanged = sha256(path) == classifier.checkpoint_sha256
         except OSError:
             unchanged = False
         if not unchanged:
             self.classifier = None
             self.model_error = "Model changed while loading."
             return
-        self.active_model_sha256 = model_hash
+        self.active_model_sha256 = classifier.checkpoint_sha256
         self.model_error = ""
 
     def _reload_model(self, _checked: bool = False) -> None:
@@ -1894,8 +1969,23 @@ class MainWindow(QMainWindow):
             )
             return
         run = live_panel.run if live_panel is not None else self.queue[self.queue_index]
+        if not DEMO_MODE and not self.cfg.active_program_key:
+            self._software_hold(
+                "Choose Recipe in DATA SOURCE, then train/test/save its program model first."
+            )
+            return
         if run.key != key:
             self._software_hold("Panel route differs from the selected production recipe.")
+            return
+        if self.cfg.active_program_key and (
+            key != self.cfg.active_recipe
+            or recipe_name(run.recipe) != recipe_name(self.cfg.active_program_recipe)
+            or ProgramSelection(run.product_id.strip(), run.recipe, run.table.strip()).key
+            != self.cfg.active_program_key
+        ):
+            self._software_hold(
+                "Panel program differs from the selected Recipe. Select and test it first."
+            )
             return
         production_context = None
         if not DEMO_MODE:
@@ -1908,6 +1998,7 @@ class MainWindow(QMainWindow):
                 check_write_target(self.production_store.path, protected_roots(self.cfg))
                 if (
                     not self.active_model_path
+                    or self.active_model_sha256 != self.cfg.active_model_sha256
                     or sha256(self.active_model_path) != self.active_model_sha256
                 ):
                     raise ValueError(
@@ -1928,9 +2019,10 @@ class MainWindow(QMainWindow):
                         run, panel_key(self.cfg.result_dir, run), signature, hashes
                     )
                 production_context = {
-                    "limits": deepcopy(self.cfg.edge_limits_by_route.get(run.key)),
-                    "manifest_location": self.cfg.capture_manifest_dir
-                    or self._default_edge_manifest(),
+                    "limits": deepcopy(
+                        self.cfg.edge_limits_by_route.get(self.cfg.active_program_key or run.key)
+                    ),
+                    "manifest_location": self.cfg.capture_manifest_dir,
                     "recipe": str(recipe_candidates[0]),
                     "edge_state": deepcopy(self.edge_review),
                     "model": {
@@ -1943,12 +2035,29 @@ class MainWindow(QMainWindow):
                         str(self.active_model_path.resolve()): self.active_model_sha256,
                     },
                     "readiness_error": live_panel.readiness_error,
+                    "archive_root": str(CONFIG_PATH.parent / "production_evidence"),
+                    "archive_config": deepcopy(self.cfg),
+                    "claim": live_panel.key,
+                    "logger": self.runtime_logger,
                     "references": self.live_source.references
                     if self.live_source is not None and self.live_scan_worker is not None
                     else None,
                 }
-                self.production_store.claim(live_panel.key, run.key, live_panel.signature)
+                self.production_store.claim(
+                    live_panel.key,
+                    run.key,
+                    live_panel.signature,
+                    result_path=Path(self.cfg.result_dir) / run.result_file,
+                )
                 self.active_claim = live_panel.key
+                log_event(
+                    self.runtime_logger,
+                    "board.claimed",
+                    claim=live_panel.key,
+                    sn=run.sn,
+                    recipe=run.recipe,
+                    images=len(run.pictures),
+                )
             except Exception as exc:
                 self._software_hold(f"Production not started: {exc}")
                 return
@@ -1998,12 +2107,18 @@ class MainWindow(QMainWindow):
             try:
                 evidence = deepcopy(self.worker.evidence)
                 evidence["elapsed_ms"] = elapsed_ms
+                archive = evidence.get("archive")
                 output = (
-                    CONFIG_PATH.parent
-                    / "production_evidence"
-                    / f"{self.active_claim}_{uuid.uuid4().hex}.png"
+                    Path(archive["overview"])
+                    if archive and archive.get("overview")
+                    else (
+                        CONFIG_PATH.parent
+                        / "production_evidence"
+                        / f"{self.active_claim}_{uuid.uuid4().hex}.png"
+                    )
                 )
-                save_image(output, overview, self.cfg)
+                if archive is None or archive.get("overview_status") != result.status:
+                    save_image(output, overview, self.cfg)
                 try:
                     verify_sources(evidence)
                 except (OSError, ValueError) as exc:
@@ -2012,19 +2127,26 @@ class MainWindow(QMainWindow):
                     overview = decision_image(raw_overview, result.status, result.note)
                     save_image(output, overview, self.cfg)
                 evidence["final_status"] = result.status
+                if archive is not None:
+                    save_json(
+                        Path(archive["directory"]) / "inspection.json",
+                        {"result": result, "evidence": evidence},
+                        self.cfg,
+                    )
                 self.production_store.finish(self.active_claim, result, evidence, str(output))
                 self.active_claim = None
             except Exception as exc:
                 result.status, result.note = "FAULT", f"Production result was not saved: {exc}"
                 self._software_hold(result.note)
+                overview = decision_image(raw_overview, result.status, result.note)
                 self._show_result_image(result, overview)
                 self._append_log(result, VisionVerdict.FAULT, result.note, elapsed_ms)
                 return
         verdict, reason = verdict_for(result)
         identity = panel_id(result.run)
-        self.link.publish(identity, verdict, reason)
         self._show_result_image(result, overview)
         self._append_log(result, verdict, reason, elapsed_ms)
+        self.link.publish(identity, verdict, reason)
         self._set_busy(False)
         self._refresh_gate()
 
@@ -2054,7 +2176,20 @@ class MainWindow(QMainWindow):
         verdict: VisionVerdict,
         reason: str,
         elapsed_ms: float,
+        *,
+        completed: datetime | None = None,
     ) -> None:
+        if completed is None:
+            log_event(
+                getattr(self, "runtime_logger", None),
+                "board.result",
+                sn=result.run.sn,
+                recipe=result.run.recipe,
+                status=result.status,
+                verdict=verdict.value,
+                reason=reason,
+                elapsed_ms=elapsed_ms,
+            )
         if self.image_pixmap is None:
             return
         self.result_sequence += 1
@@ -2066,7 +2201,7 @@ class MainWindow(QMainWindow):
         )
         self.table.insertRow(0)
         values = [
-            time.strftime("%H:%M:%S"),
+            completed.astimezone().strftime("%H:%M:%S") if completed else time.strftime("%H:%M:%S"),
             panel_id(result.run),
             result.run.product_id,
             result.run.table,
@@ -2139,7 +2274,14 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._software_hold(str(exc))
             return
-        location = self.cfg.capture_manifest_dir or self._default_edge_manifest()
+        location = self.cfg.capture_manifest_dir
+        if not DEMO_MODE and (
+            not location or not (Path(location).is_dir() or Path(location).is_file())
+        ):
+            self._software_hold(
+                "Open SETTING > DATA SOURCE and select the live CAPTURE JSON FOLDER."
+            )
+            return
         if self.live_source is not None and self.live_source.references is not None:
             prior = self.live_source.references.location
             if (Path(location).resolve() if location else None) != prior:
@@ -2173,8 +2315,7 @@ class MainWindow(QMainWindow):
                         self.production_store,
                         stable_seconds=self.cfg.live_file_stable_seconds,
                         settle_seconds=self.cfg.live_panel_settle_seconds,
-                        capture_location=self.cfg.capture_manifest_dir
-                        or self._default_edge_manifest(),
+                        capture_location=self.cfg.capture_manifest_dir,
                     )
                 key = self.cmb_recipe.currentText()
                 self.live_scan_worker = LiveScanWorker(
@@ -2202,14 +2343,18 @@ class MainWindow(QMainWindow):
             and worker.source.references is not None
             and worker.source.references.location
             == (
-                Path(self.cfg.capture_manifest_dir or self._default_edge_manifest()).resolve()
-                if (self.cfg.capture_manifest_dir or self._default_edge_manifest())
+                Path(self.cfg.capture_manifest_dir).resolve()
+                if self.cfg.capture_manifest_dir
                 else None
             )
             and all(
                 Path(getattr(worker.source.cfg, name)).resolve()
                 == Path(getattr(self.cfg, name)).resolve()
                 for name in ("picture_dir", "result_dir", "recipe_dir", "capture_manifest_dir")
+            )
+            and all(
+                getattr(worker.source.cfg, name) == getattr(self.cfg, name)
+                for name in ("active_recipe", "active_program_key", "active_program_recipe")
             )
         )
 
@@ -2237,6 +2382,7 @@ class MainWindow(QMainWindow):
         self._refresh_gate()
 
     def _software_hold(self, reason: str = "STOP / HOLD pressed by operator") -> None:
+        log_event(getattr(self, "runtime_logger", None), "production.hold", reason=reason)
         self.auto_running = False
         self.auto_timer.stop()
         if self.worker is not None and self.worker.isRunning():
@@ -2278,20 +2424,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Access denied", "Incorrect settings password.")
             return
 
-        self._sync_settings_controls()
-        if not self.settings_image_path:
-            if self.settings_image_dir and Path(self.settings_image_dir).is_dir():
-                self._set_settings_path(self.settings_image_dir)
-            else:
-                self._use_default_settings_image()
+        self.settings_workflow.setCurrentIndex(0)
         self.advanced_panel.setVisible(False)
         self.settings_workflow.setVisible(True)
         self.image_card.setVisible(False)
         self.log_card.setVisible(False)
         self.settings_panel.setVisible(True)
         self.btn_settings.setText("SETTING ▴")
-        QTimer.singleShot(0, self._preview_sobel)
-        QTimer.singleShot(0, self._layout_sobel_parameter_cards)
+        route = self.cmb_recipe.currentText()
+        self.held_board = None
+        if self.production_store and route:
+            try:
+                blocked = self.production_store.blocked_board(route)
+                if blocked:
+                    key, state, result_path = blocked
+                    self.held_board = (route, key)
+                    result_name = Path(result_path).name if result_path else key[:12]
+                    self.btn_retry_board.setText(f"RETRY {state} BOARD")
+                    self.btn_retry_board.setToolTip(f"{route} | {result_name}\n{key}")
+            except sqlite3.Error as exc:
+                self._software_hold(f"Cannot read production history: {exc}")
+        self.btn_retry_board.setVisible(self.held_board is not None)
+        # An empty program selection is still a loaded source. Do not rescan its
+        # entire Result archive each time the user opens Settings.
+        if self.auo_source_dataset is None:
+            self._sync_settings_controls()
+            directory = self.settings_image_dir
+            if not directory or not Path(directory).is_dir():
+                directory = str(Path(self.cfg.picture_dir).parent)
+            if Path(directory).is_dir():
+                self._begin_settings_source_load(directory)
 
     def _make_parameter_control(
         self,
@@ -2303,14 +2465,17 @@ class MainWindow(QMainWindow):
         """Expose precise inputs while preserving the saved integer parameter contract."""
         card = QFrame()
         card.setObjectName("parameterCard")
-        card.setFixedHeight(40)
+        card.setFixedHeight(48)
         card.setToolTip(help_text)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(6, 1, 6, 1)
         layout.setSpacing(5)
         title_label = QLabel(title)
         title_label.setStyleSheet("color:#334155; font-size:9pt; font-weight:700;")
-        layout.addWidget(title_label, 1)
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(0)
+        title_layout.addWidget(title_label)
+        layout.addLayout(title_layout, 1)
         slider.setParent(card)
         slider.hide()
         value_label.setParent(card)
@@ -2339,6 +2504,10 @@ class MainWindow(QMainWindow):
             editor.setRange(slider.minimum() / scale, slider.maximum() / scale)
             editor.setSingleStep(slider.singleStep() / scale)
             editor.setKeyboardTracking(False)
+            if slider is self.slider_edge_gain:
+                editor.setSuffix(" ×")
+            if slider is self.slider_sobel_clip:
+                editor.setSuffix(" %")
             if slider is self.slider_blur_sigma:
                 editor.setSpecialValueText("AUTO")
             editor.setValue(slider.value() / scale)
@@ -2349,6 +2518,17 @@ class MainWindow(QMainWindow):
                 editor.setValue(value / scale)
                 editor.blockSignals(False)
 
+        if isinstance(editor, QComboBox):
+            range_text = f"Min {editor.itemText(0)}  |  Max {editor.itemText(editor.count() - 1)}"
+        else:
+            range_text = (
+                f"Min {editor.minimum():g}{editor.suffix()}  |  "
+                f"Max {editor.maximum():g}{editor.suffix()}"
+            )
+        range_label = QLabel(range_text)
+        range_label.setAccessibleName(f"{title} range")
+        range_label.setStyleSheet("color:#64748b; font-size:8pt;")
+        title_layout.addWidget(range_label)
         slider.valueChanged.connect(sync)
         editor.setAccessibleName(title)
         editor.setToolTip(help_text)
@@ -2390,7 +2570,11 @@ class MainWindow(QMainWindow):
             self.btn_apply_settings.setEnabled(False)
 
     def _settings_job_busy(self) -> bool:
-        return self.settings_worker is not None or self.training_worker is not None
+        return (
+            self.settings_worker is not None
+            or self.training_worker is not None
+            or self.settings_source_worker is not None
+        )
 
     def _lock_settings_job(self, busy: bool) -> None:
         self.settings_workflow.setEnabled(not busy)
@@ -2410,13 +2594,19 @@ class MainWindow(QMainWindow):
             and result_files_signature(dataset.result_dir) != dataset.result_snapshot
         ):
             raise OSError("Result data changed. Select the source again and rerun the model test.")
-        model_path = self._model_path(self._settings_product_id())
+        model_digest = None
+        if isinstance(self.settings_classifier, CutClassifier):
+            model_digest = sha256(self._model_path(self._settings_model_key()))
+            if model_digest != self.settings_classifier.checkpoint_sha256:
+                raise OSError("The Settings model changed on disk. Reload and test it again.")
         return (
             self.settings_image_dir,
+            self._settings_model_key(),
             id(self.settings_classifier),
-            self._source_signature(str(model_path)) if model_path.is_file() else None,
+            model_digest,
             self._sobel_parameter_record(),
             self.spin_confidence.value(),
+            self.spin_expected_cuts.value(),
             tuple((path, self._source_signature(path)) for path in self.settings_image_paths),
         )
 
@@ -2438,6 +2628,17 @@ class MainWindow(QMainWindow):
             self.sobel_preview_timer.start()
 
     def _sync_settings_controls(self) -> None:
+        sliders = (
+            self.slider_sobel_blur,
+            self.slider_blur_sigma,
+            self.slider_sobel_kernel,
+            self.slider_gradient_x,
+            self.slider_gradient_y,
+            self.slider_sobel_clip,
+            self.slider_edge_gain,
+            self.slider_noise_floor,
+        )
+        blockers = [QSignalBlocker(slider) for slider in sliders]
         kernel_values = (1, 3, 5, 7)
         blur = self.cfg.sobel_blur_ksize if self.cfg.sobel_blur_ksize in kernel_values else 3
         sobel = self.cfg.sobel_ksize if self.cfg.sobel_ksize in kernel_values else 3
@@ -2449,6 +2650,22 @@ class MainWindow(QMainWindow):
         self.slider_sobel_clip.setValue(int(round(self.cfg.sobel_clip_percentile * 100.0)))
         self.slider_edge_gain.setValue(int(round(self.cfg.sobel_edge_gain * 1000.0)))
         self.slider_noise_floor.setValue(self.cfg.sobel_noise_floor)
+        del blockers
+        # Update numeric editors once without firing eight full status refreshes.
+        for slider, editor in self.sobel_parameter_editors:
+            with QSignalBlocker(editor):
+                if isinstance(editor, QComboBox):
+                    editor.setCurrentIndex(slider.value())
+                else:
+                    scale = (
+                        1000
+                        if slider
+                        in (self.slider_gradient_x, self.slider_gradient_y, self.slider_edge_gain)
+                        else 100
+                        if slider in (self.slider_blur_sigma, self.slider_sobel_clip)
+                        else 1
+                    )
+                    editor.setValue(slider.value() / scale)
         self._sobel_parameter_changed()
         self.spin_confidence.setValue(self.cfg.good_confidence_min * 100.0)
         self._refresh_trial_model_status()
@@ -2535,6 +2752,7 @@ class MainWindow(QMainWindow):
         payload = {
             "version": 3,
             "source_path": self.settings_image_dir,
+            "selected_program_key": self.cmb_settings_recipe.currentData() or "",
             "images": self.sobel_records if records is None else records,
             "edge_review": self.edge_review if edge_review is None else edge_review,
         }
@@ -2637,6 +2855,7 @@ class MainWindow(QMainWindow):
             bool(record.get("trained"))
             and self._record_is_saved(path)
             and bool(model_name)
+            and model_name == self._model_path(self._settings_model_key()).name
             and bool(record.get("trained_sobel_parameters"))
             and record.get("trained_label") == record.get("training_label")
             and saved_parameters == trained_parameters
@@ -2650,13 +2869,7 @@ class MainWindow(QMainWindow):
         if not root.is_dir():
             return
         try:
-            dataset = scan_auo6000_dataset(root)
-            output_root = SOBEL_OUTPUT_DIR.resolve()
-            paths = [
-                image.path
-                for image in dataset.images
-                if output_root not in Path(image.path).resolve().parents
-            ]
+            dataset = scan_auo6000_dataset(root, require_machine_layout=True)
         except SourceSelectionError as exc:
             if exc.candidates:
                 chosen, accepted = QInputDialog.getItem(
@@ -2677,28 +2890,141 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "Path could not be read", str(exc))
             return
+        self._install_settings_source(dataset)
+
+    def _begin_settings_source_load(self, directory: str) -> None:
+        if self._settings_job_busy() or self.worker is not None or self.auto_running:
+            return
+        self._pending_settings_source = None
+        self._settings_source_started = time.perf_counter()
+        self.settings_source_worker = SettingsSourceWorker(directory)
+        self.settings_source_worker.completed.connect(
+            lambda dataset: setattr(self, "_pending_settings_source", (dataset, None))
+        )
+        self.settings_source_worker.failed.connect(
+            lambda error: setattr(self, "_pending_settings_source", (None, error))
+        )
+        self.settings_source_worker.finished.connect(self._settings_source_finished)
+        self.lbl_auo_files.setText("LOADING SOURCE DATA…")
+        self._lock_settings_job(True)
+        self.settings_source_worker.start()
+
+    def _settings_source_finished(self) -> None:
+        worker = self.settings_source_worker
+        pending = self._pending_settings_source
+        self.settings_source_worker = None
+        self._pending_settings_source = None
+        if worker is not None:
+            worker.deleteLater()
+        if self.closing_requested:
+            return
+        self._lock_settings_job(False)
+        if pending is None:
+            self.lbl_auo_files.setText("SOURCE LOAD CANCELLED")
+            return
+        dataset, error = pending
+        if error is not None:
+            self.lbl_auo_files.setText(f"SOURCE LOAD FAILED: {error}")
+            log_event(self.runtime_logger, "settings.source_failed", error=str(error))
+            if isinstance(error, SourceSelectionError):
+                if error.candidates:
+                    chosen, accepted = QInputDialog.getItem(
+                        self,
+                        "Select machine data",
+                        str(error),
+                        [str(path) for path in error.candidates],
+                        0,
+                        False,
+                    )
+                    if not accepted:
+                        return
+                else:
+                    chosen = QFileDialog.getExistingDirectory(
+                        self, str(error), str(Path(worker.directory).parent)
+                    )
+                if chosen and Path(chosen).resolve() != Path(worker.directory).resolve():
+                    self._begin_settings_source_load(chosen)
+            return
+        self._install_settings_source(dataset)
+        self.settings_workflow.setCurrentIndex(0)
+        self.sobel_preview_timer.stop()
+        log_event(
+            self.runtime_logger,
+            "settings.source_loaded",
+            seconds=time.perf_counter() - self._settings_source_started,
+            images=len(dataset.images),
+            panels=len(dataset.panels),
+        )
+
+    def _install_settings_source(self, dataset: AUO6000Dataset) -> None:
+        self.auo_source_dataset = dataset
+        self.settings_programs = available_programs(dataset)
+        previous = self.cmb_settings_recipe.currentData()
+        if previous not in self.settings_programs:
+            try:
+                saved = json.loads(SOBEL_WORKFLOW_PATH.read_text(encoding="utf-8"))
+                previous = saved.get("selected_program_key", "")
+            except (OSError, ValueError, AttributeError):
+                previous = ""
+        self.cmb_settings_recipe.blockSignals(True)
+        self.cmb_settings_recipe.clear()
+        self.cmb_settings_recipe.addItem("ALL SOURCE IMAGES / SELECT RECIPE", "")
+        for key, program in self.settings_programs.items():
+            self.cmb_settings_recipe.addItem(program.caption, key)
+        known = [p for p in self.settings_programs.values() if p.product]
+        if previous not in self.settings_programs:
+            previous = self.cfg.active_program_key
+        if previous not in self.settings_programs and len(known) == 1:
+            previous = known[0].key
+        index = self.cmb_settings_recipe.findData(previous)
+        self.cmb_settings_recipe.setCurrentIndex(max(0, index))
+        self.cmb_settings_recipe.blockSignals(False)
+        self.settings_image_dir = dataset.root
+        machine_root = str(Path(dataset.root).parent)
+        self.txt_settings_path.setText(machine_root)
+        self.txt_settings_path.setToolTip(machine_root)
+        self._settings_recipe_changed()
+        if self.settings_image_paths and self._settings_model_key():
+            self.settings_workflow.setCurrentIndex(1)
+
+    def _settings_recipe_changed(self, *_args) -> None:
+        if self._settings_job_busy() or self.worker is not None or self.auto_running:
+            self.cmb_settings_recipe.blockSignals(True)
+            index = self.cmb_settings_recipe.findData(self._selected_settings_program_key)
+            self.cmb_settings_recipe.setCurrentIndex(max(0, index))
+            self.cmb_settings_recipe.blockSignals(False)
+            return
+        source = self.auo_source_dataset
+        if source is None:
+            return
+        self.sobel_preview_timer.stop()
+        program = self.settings_programs.get(self.cmb_settings_recipe.currentData())
+        dataset = select_program(source, program) if program is not None else source
         self.auo_dataset = dataset
+        self._selected_settings_program_key = self.cmb_settings_recipe.currentData() or ""
+        self.spin_expected_cuts.setEnabled(bool(program and program.product))
+        self.spin_expected_cuts.setValue(
+            self.cfg.expected_images_by_route.get(program.key, 0) if program else 0
+        )
+        output_root = SOBEL_OUTPUT_DIR.resolve()
+        paths = [
+            i.path for i in dataset.images if output_root not in Path(i.path).resolve().parents
+        ]
         self._invalidate_settings_trial()
         self.trial_predictions.clear()
         self.settings_image_metadata = dataset.image_index
-        self.settings_image_dir = dataset.root
-        self.txt_settings_path.setText(self.settings_image_dir)
-        self.txt_settings_path.setToolTip(self.settings_image_dir)
         self._update_auo_source_summary()
         self.trial_preview_pixmap = None
         self.trial_result = None
         self.training_last_message = ""
         self.training_last_success = None
-        self._set_settings_images(paths)
+        self._refresh_spec_button()
         self._load_settings_model()
-        self._refresh_training_workflow_status()
-        self._show_training_image()
+        self._set_settings_images(paths)
         try:
             self._save_sobel_records()
         except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.warning(self, "Data source not saved", str(exc))
-        if paths:
-            self.settings_workflow.setCurrentIndex(1)
 
     def _update_auo_source_summary(self) -> None:
         dataset = self.auo_dataset
@@ -2706,12 +3032,18 @@ class MainWindow(QMainWindow):
             return
         panel_count = len(dataset.panels)
         image_count = len(dataset.images)
-        self.lbl_auo_recipe.setText(dataset.recipe_name or "NOT FOUND")
-        self.lbl_auo_recipe.setToolTip(dataset.recipe_name or "Recipe not found")
+        source_image_count = len((self.auo_source_dataset or dataset).images)
+        program = self.settings_programs.get(self.cmb_settings_recipe.currentData())
+        recipe_text = program.recipe if program is not None else "NOT SELECTED"
+        self.lbl_auo_recipe.setText(recipe_text)
+        self.lbl_auo_recipe.setToolTip(recipe_text)
         self.lbl_auo_panels.setText(str(panel_count))
-        self.lbl_auo_images.setText(str(image_count))
+        self.lbl_auo_images.setText(str(source_image_count))
+        linked_images = sum(bool(image.result_file) for image in dataset.images)
         self.lbl_auo_cut_points.setText(
-            str(dataset.expected_cut_points) if dataset.expected_cut_points else "UNASSIGNED"
+            str(dataset.expected_cut_points)
+            if program is not None and linked_images and dataset.expected_cut_points
+            else "UNASSIGNED"
         )
         format_text = dataset.format_summary or "NOT FOUND"
         disguised_count = sum(
@@ -2724,7 +3056,6 @@ class MainWindow(QMainWindow):
         self.lbl_auo_format.setText(format_text)
 
         matched_panels = len({image.result_file for image in dataset.images if image.result_file})
-        linked_images = sum(bool(image.result_file) for image in dataset.images)
         product = self._settings_product_id()
         if (
             image_count
@@ -2749,7 +3080,14 @@ class MainWindow(QMainWindow):
             background = "#ffedd5"
             colour = "#9a3412"
         else:
-            status = "NO IMAGES FOUND\nSelect Sep.Net, SepData, Picture or their parent folder"
+            status = (
+                "NO MATCHED IMAGES FOR SELECTED RECIPE\n"
+                f"{source_image_count} source images found in SepData/Picture. "
+                "Choose ALL SOURCE IMAGES to review them; matching Result records are required "
+                "to use them for this recipe."
+                if self._settings_model_key()
+                else "NO IMAGES FOUND\nSelect the machine folder containing Sep.Net and SepData"
+            )
             background = "#fee2e2"
             colour = "#b91c1c"
         self.lbl_auo_files.setText(status)
@@ -2759,16 +3097,23 @@ class MainWindow(QMainWindow):
         )
 
         folder_rows = (
-            ("Picture", image_count, dataset.picture_dir),
+            ("Sep.Net", None, str(Path(dataset.root).parent / "Sep.Net")),
+            ("SepData", None, dataset.root),
+            ("Picture", source_image_count, dataset.picture_dir),
             ("Result", panel_count, dataset.result_dir),
             ("Recipe", len(dataset.recipe_files), dataset.recipe_dir),
             ("Log", len(dataset.log_files), dataset.log_dir),
         )
+        self.tbl_auo_folders.setRowCount(len(folder_rows))
         for row, (name, count, location) in enumerate(folder_rows):
             values = (
                 name,
-                "READY" if location and count else "MISSING",
-                f"{count:,}",
+                "READY"
+                if location and Path(location).is_dir() and (count is None or count)
+                else "NO MATCHED DATA"
+                if location and Path(location).is_dir()
+                else "MISSING",
+                f"{count:,}" if count is not None else "--",
                 location or "Not found",
             )
             for column, value in enumerate(values):
@@ -2787,7 +3132,7 @@ class MainWindow(QMainWindow):
             f"CURRENT BATCH: {panel_count} PANEL{'S' if panel_count != 1 else ''}  |  "
             f"{image_count} IMAGE{'S' if image_count != 1 else ''}  |  "
             f"{dataset.expected_cut_points or '--'} CUT POINTS / PANEL  |  "
-            f"{dataset.recipe_name or 'RECIPE NOT FOUND'}"
+            f"{recipe_text}"
         )
         self.btn_trial.setText(
             f"TEST ALL {image_count:,} IMAGES" if image_count else "TEST VISION TRANSFORMER"
@@ -2858,7 +3203,8 @@ class MainWindow(QMainWindow):
         self.cmb_training_image.blockSignals(False)
         self.cmb_training_image.setEnabled(bool(paths))
         self._refresh_training_workflow_status()
-        self._show_training_image()
+        if self.settings_workflow.currentIndex() == 2:
+            self._show_training_image()
 
     def _current_training_image_path(self) -> str:
         if not hasattr(self, "cmb_training_image"):
@@ -3222,7 +3568,7 @@ class MainWindow(QMainWindow):
             else self._sobel_from_controls()
         )
         extractor = FeatureExtractor(device="cpu", sobel=sobel)
-        edge = extractor.edge_map(path, crop)
+        edge = extractor.edge_map_array(original, crop)
         if edge is None:
             self.trial_preview_pixmap = None
             self.lbl_trial_preview.setText("SOBEL EDGE COULD NOT BE GENERATED")
@@ -3478,11 +3824,11 @@ class MainWindow(QMainWindow):
         start = self.settings_image_dir if self.settings_image_dir else self.cfg.picture_dir
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select Sep.Net, SepData, Picture or their parent folder",
+            "Select the machine folder containing Sep.Net and SepData",
             start,
         )
         if directory:
-            self._set_settings_path(directory)
+            self._begin_settings_source_load(directory)
             self.settings_workflow.setCurrentIndex(0)
 
     def _load_current_image_parameters(self) -> None:
@@ -3799,7 +4145,7 @@ class MainWindow(QMainWindow):
         crop = self._settings_crop()
         cropped = crop.apply(original)
         extractor = FeatureExtractor(device="cpu", sobel=self._sobel_from_controls())
-        edge = extractor.edge_map(path, crop)
+        edge = extractor.edge_map_array(original, crop)
         if edge is None:
             self.lbl_trial_result.setText("SOBEL EDGE COULD NOT BE GENERATED")
             return False
@@ -3861,7 +4207,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        target = self._model_path(product)
+        target = self._model_path(self._settings_model_key())
         try:
             check_write_target(target, self._settings_protected_roots())
             signatures = {path: self._source_signature(path) for path, _ in items}
@@ -3930,7 +4276,7 @@ class MainWindow(QMainWindow):
                 for path, signature in self.training_input_signatures.items()
             ):
                 raise ValueError("Training images changed during training; run training again.")
-            classifier.model_key = self._settings_product_id()
+            classifier.model_key = self._settings_model_key()
             classifier.save(target, protected=self._settings_protected_roots())
         except Exception as exc:
             self._settings_training_failed(f"Model could not be saved: {exc}")
@@ -3997,10 +4343,16 @@ class MainWindow(QMainWindow):
         roots = protected_roots(self.cfg)
         if self.auo_dataset is not None:
             roots.append(Path(self.auo_dataset.root).resolve())
+            companion = Path(self.auo_dataset.root).parent / "Sep.Net"
+            if companion.is_dir():
+                roots.append(companion.resolve())
         return roots
 
     def _apply_settings(self, _checked: bool = False) -> bool:
         if self.worker is not None or self.auto_running or self._settings_job_busy():
+            return False
+        if DEMO_MODE:
+            self.lbl_trial_result.setText("SCRIPTED DEMO CANNOT APPROVE A PRODUCTION MODEL")
             return False
         try:
             approved = (
@@ -4013,6 +4365,9 @@ class MainWindow(QMainWindow):
         if not approved:
             self._invalidate_settings_trial()
             self.lbl_trial_result.setText("RUN A COMPLETE MODEL TEST BEFORE SAVING SETTINGS")
+            return False
+        if not isinstance(self.settings_classifier, CutClassifier):
+            self.lbl_trial_result.setText("LOAD AND TEST A TRAINED PROGRAM MODEL BEFORE SAVING")
             return False
         dataset = self.auo_dataset
         product = self._settings_product_id()
@@ -4027,11 +4382,13 @@ class MainWindow(QMainWindow):
             )
             return False
         sobel = self._sobel_from_controls()
+        selected_results = {panel.result_file for panel in dataset.panels}
         try:
             source_runs = [
                 run
                 for day in available_days(dataset.result_dir)
                 for run in load_runs(dataset.result_dir, day)
+                if str((Path(dataset.result_dir) / run.result_file).resolve()) in selected_results
             ]
             if self.trial_input_signature != self._trial_signature():
                 raise OSError("Test inputs changed while reading Result data.")
@@ -4039,10 +4396,20 @@ class MainWindow(QMainWindow):
             self._invalidate_settings_trial()
             self.lbl_trial_result.setText(f"SETTINGS NOT SAVED: {exc}")
             return False
+        program = self.settings_programs.get(self.cmb_settings_recipe.currentData())
+        if program is None or not source_runs:
+            self.lbl_trial_result.setText("NO VERIFIED RUNS FOR THE SELECTED PROGRAM")
+            return False
+        route = program.route
+        count = self.spin_expected_cuts.value()
+        if count <= 0 or any(image.cut_point_total != count for image in dataset.images):
+            self.lbl_trial_result.setText(
+                "SETTINGS NOT SAVED: Enter the CUT count from the machine program in DATA SOURCE. "
+                "Each captured training panel must contain exactly that many CUTs."
+            )
+            return False
         expected = dict(self.cfg.expected_images_by_route)
-        for run in source_runs:
-            expected[run.key] = dataset.expected_cut_points
-        route = source_runs[0].key if source_runs else product
+        expected[program.key] = count
         candidate = replace(
             self.cfg,
             picture_dir=dataset.picture_dir,
@@ -4050,6 +4417,9 @@ class MainWindow(QMainWindow):
             recipe_dir=dataset.recipe_dir,
             eqp_cfg_path=str(Path(dataset.root) / "Config" / "Eqp.cfg"),
             active_recipe=route,
+            active_program_key=program.key,
+            active_program_recipe=program.recipe,
+            active_model_sha256=self.settings_classifier.checkpoint_sha256,
             expected_images_by_route=expected,
             sobel_blur_ksize=sobel.blur_ksize,
             sobel_blur_sigma=sobel.blur_sigma,
@@ -4062,7 +4432,11 @@ class MainWindow(QMainWindow):
             good_confidence_min=self.spin_confidence.value() / 100.0,
         )
         try:
-            check_write_target(CONFIG_PATH, self._settings_protected_roots())
+            protected = self._settings_protected_roots()
+            check_write_target(CONFIG_PATH, protected)
+            store_approved_model(
+                self._model_path(program.key), candidate.active_model_sha256, protected
+            )
             candidate.save(CONFIG_PATH)
         except (OSError, ValueError, ProtectedPathError) as exc:
             QMessageBox.critical(self, "Settings not saved", str(exc))
@@ -4274,13 +4648,20 @@ class MainWindow(QMainWindow):
         self.btn_model.setEnabled(not busy)
         self.btn_next.setEnabled(not busy and bool(self.queue))
         self.cmb_recipe.setEnabled(not busy and not self.auto_running)
+        self.cmb_settings_recipe.setEnabled(
+            not busy and not self.auto_running and not self._settings_job_busy()
+        )
         self.cmb_day.setEnabled(not busy and not self.auto_running)
         self.btn_settings.setEnabled(not busy and not self.auto_running)
         self.btn_spec.setEnabled(
-            not busy and not self.auto_running and not self._settings_job_busy()
+            bool(self._settings_model_key())
+            and not busy
+            and not self.auto_running
+            and not self._settings_job_busy()
         )
 
     def _worker_failed(self, message: str) -> None:
+        log_event(getattr(self, "runtime_logger", None), "worker.failed", error=message)
         self.auto_running = False
         self.auto_timer.stop()
         self.btn_auto.setText("▶ START AUTO")
@@ -4291,7 +4672,11 @@ class MainWindow(QMainWindow):
         self.lbl_detail.setText(message)
         if self.current_run is not None:
             result = PanelDecision(run=self.current_run, note=reason)
-            self._show_result_image(result)
+            try:
+                self._show_result_image(result)
+            except Exception:
+                self.image_pixmap = None
+                self.image.setText("Inspection failed; no preview is available. See runtime logs.")
             if self.active_claim is not None:
                 try:
                     self.production_store.finish(self.active_claim, result, {"error": message})
@@ -4307,6 +4692,10 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
             self.worker = None
         self._set_busy(False)
+        if self.link.state is GateState.INSPECTING:
+            self._software_hold(
+                "Inspection thread ended without a committed result; operator review required."
+            )
         if self.auto_running and self.link.state is GateState.READY:
             self.auto_timer.start(max(500, int(self.cfg.live_poll_seconds * 1000)))
 
@@ -4400,6 +4789,7 @@ class MainWindow(QMainWindow):
             self.settings_worker,
             self.training_worker,
             self.live_scan_worker,
+            self.settings_source_worker,
         ):
             if worker and worker.isRunning():
                 worker.requestInterruption()
@@ -4410,6 +4800,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(250, self.close)
             return
         self.instance_lock.unlock()
+        log_event(getattr(self, "runtime_logger", None), "application.closed")
+        close_runtime_log(getattr(self, "runtime_logger", None))
         event.accept()
 
 

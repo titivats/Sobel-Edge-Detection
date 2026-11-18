@@ -83,6 +83,7 @@ class TrainingEdgeDialog(QDialog):
         parent=None,
         save_callback=None,
         confirmations=None,
+        review_loader=None,
     ):
         super().__init__(parent)
         self.setObjectName("pcbEdgeReview")
@@ -93,6 +94,7 @@ class TrainingEdgeDialog(QDialog):
         self.resize(min(1250, screen.width() - 50), min(780, screen.height() - 50))
         self.image_path, self.inputs, self.choices = image_path, inputs, choices
         self.save_callback = save_callback
+        self.review_loader = review_loader or load_edge_review
         self.confirmations = confirmations if isinstance(confirmations, dict) else {}
         self.snapshot = None
         self.clicked_edge_point = None
@@ -346,7 +348,7 @@ class TrainingEdgeDialog(QDialog):
             self.update_save_state()
             return
         try:
-            fresh = load_edge_review(self.manifest_path, self.image_path, **self.inputs)
+            fresh = self.review_loader(self.manifest_path, self.image_path, **self.inputs)
             if (
                 fresh["manifest_sha256"] != self.review["manifest_sha256"]
                 or fresh[edge]["provenance"]["image_sha256"] != self.image_hash
@@ -630,7 +632,7 @@ class TrainingEdgeDialog(QDialog):
         try:
             if not path:
                 raise ValueError("Load matching reference data to display A/B. No line is guessed.")
-            review = load_edge_review(path, self.image_path, **self.inputs)
+            review = self.review_loader(path, self.image_path, **self.inputs)
             if review["A"]["provenance"]["image_sha256"] != self.image_hash:
                 raise ValueError("Image changed. Close and reopen the edge review.")
             self.review, self.manifest_path = review, str(path)
@@ -663,7 +665,7 @@ class TrainingEdgeDialog(QDialog):
     def confirm(self):
         # Reject source changes while the trainer was reviewing the picture.
         try:
-            fresh = load_edge_review(self.manifest_path, self.image_path, **self.inputs)
+            fresh = self.review_loader(self.manifest_path, self.image_path, **self.inputs)
             if self.review is None or fresh["manifest_sha256"] != self.review["manifest_sha256"]:
                 raise ValueError("Reference data changed. Reload and review before saving.")
         except (OSError, ValueError, KeyError, TypeError, cv2.error) as exc:

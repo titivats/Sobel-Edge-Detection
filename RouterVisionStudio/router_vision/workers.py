@@ -8,12 +8,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from .auo6000 import scan_auo6000_dataset
 from .machine import Run
 from .machine_reference import sha256
 from .model import CropBox, CutClassifier, SobelConfig
 from .overview import render_prediction_overview
 from .production import PanelDecision, classify_panel
+from .production_archive import archive_panel
+from .production_evidence import decision_image, save_image, verify_sources
 from .production_measurement import CaptureReferences, inspect_with_spec
+from .runtime_log import log_event
 
 
 class InspectionWorker(QThread):
@@ -71,6 +75,36 @@ class InspectionWorker(QThread):
                     self.good_confidence_min,
                     cancelled=self.isInterruptionRequested,
                 )
+        except InterruptedError:
+            self.failed.emit("Inspection cancelled.")
+            return
+        except Exception as exc:
+            result = PanelDecision(run=self.target_run, note=f"Vision processing failed: {exc}")
+            self.evidence["processing_error"] = traceback.format_exc(limit=6)
+            log_event(
+                (self.production_context or {}).get("logger"),
+                "vision.processing_failed",
+                error=self.evidence["processing_error"],
+            )
+        try:
+            prepared = None
+            context = self.production_context or {}
+            if context.get("archive_root"):
+                archive, prepared = archive_panel(
+                    result,
+                    self.classifier,
+                    context["archive_root"],
+                    context["archive_config"],
+                    context["claim"],
+                    cancelled=self.isInterruptionRequested,
+                )
+                self.evidence["archive"] = archive
+                if not archive["complete"]:
+                    result.status, result.note = (
+                        "FAULT",
+                        "Some cut-point image evidence could not be archived.",
+                    )
+                verify_sources(self.evidence)
             measurement_by_path = {m["path"]: m for m in self.evidence.get("measurements", [])}
             captions = {}
             for detail in result.details:
@@ -93,7 +127,24 @@ class InspectionWorker(QThread):
                 tile_context=captions or None,
                 tile_verdicts={path: entry["status"] for path, entry in measurement_by_path.items()}
                 or None,
+                prepared_images=prepared,
             )
+            if context.get("archive_root"):
+                output = Path(self.evidence["archive"]["directory"]) / "overview.jpeg"
+                save_image(
+                    output,
+                    decision_image(overview, result.status, result.note),
+                    context["archive_config"],
+                )
+                self.evidence["archive"]["overview"] = str(output)
+                self.evidence["archive"]["overview_status"] = result.status
+                log_event(
+                    context.get("logger"),
+                    "board.images_archived",
+                    claim=context["claim"],
+                    cuts=len(self.evidence["archive"]["cuts"]),
+                    directory=str(output.parent),
+                )
         except Exception:
             self.failed.emit(traceback.format_exc(limit=6))
             return
@@ -115,6 +166,28 @@ class LiveScanWorker(QThread):
             self.failed.emit(str(exc))
         else:
             self.completed.emit(panels)
+
+
+class SettingsSourceWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(object)
+
+    def __init__(self, directory):
+        super().__init__()
+        self.directory = directory
+
+    def run(self):
+        try:
+            dataset = scan_auo6000_dataset(
+                self.directory,
+                require_machine_layout=True,
+                cancelled=self.isInterruptionRequested,
+            )
+            if not self.isInterruptionRequested():
+                self.completed.emit(dataset)
+        except Exception as exc:
+            if not self.isInterruptionRequested():
+                self.failed.emit(exc)
 
 
 class VisionTrialWorker(QThread):

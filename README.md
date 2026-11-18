@@ -3,18 +3,36 @@
 Windows desktop workflow for reviewing AUROTEK AUO6000 PCB images, tuning Sobel edges,
 and training a DINOv2-based GOOD / NG classifier. The production UI is in English.
 
-## Current release — 2026-10-03
+### Windows x64 distribution
 
-- **SPEC** on the Production screen opens recipe-specific **Max Inner / Max Outer (mm)**
-  settings. **SAVE SPEC** saves edited recipes to the app configuration; switching recipes
-  keeps pending edits, and **CANCEL** discards them. Values must be finite and non-negative.
-  The button displays the most recently saved recipe and its limits, and opens that recipe.
+Download and run the installer, then open **AVTR Router Vision Studio** from Start. The public installer includes the CPU runtime, the pinned DINOv2 ViT-S/14 weights, and default settings. In Settings, select the machine export, train the classifier for the selected program, run TEST and SAVE SETTINGS before starting AUTO. The launcher accepts the existing Settings password environment variable or prompts to set a password for the current Windows user. [Windows x64 installer](release/AVTR-Setup-x64.exe) · [คู่มือติดตั้งภาษาไทย](release/วิธีติดตั้ง%20AVTR.txt) · [SHA-256 checksums](release/SHA256SUMS.txt)
+
+For a public release build, run `scripts/windows/build_portable.py --public` with the tested Windows x64 Python 3.12 environment. Supply `--app` (the application folder), `--output` (an empty portable directory), `--vc-cab` (the x64 VC runtime minimum redistributable cabinet), and optionally `--hub` (the Torch hub cache). Use the resulting folder's `_runtime/python.exe` to run `scripts/windows/verify_portable.py --public <portable-directory>`. Compile `scripts/windows/avtr.nsi` with NSIS 3 using the absolute paths in `/DPAYLOAD_DIR=...`, `/DOUTPUT_EXE=...` and `/DBUILD_PYTHON=...`.
+
+## Live trial update — 2026-11-18
+
+Enter the number of CUTs shown by the machine program in **SETTING → DATA SOURCE → CUTs in machine program**. Capture counts are checked against this value on Save. **CAPTURE JSON FOLDER** selects the live capture feed. After testing, **START TEST & SAVE SETTINGS** pins the approved checkpoint by SHA-256. Retraining updates the candidate checkpoint. Restarting AUTO continues to use the last approved copy.
+
+Repeat **SAVE EDGE** for each selected cut after upgrading to measurement v7. The dark groove must agree with the projected travel in the capture record. The normal PCB edge in the image supplies the measurement zero. Use reference parts to compare the observed groove and measured dimensions on the actual machine.
+
+The first live scan records the existing older Result files for the selected route and directory in the local inspection database. A matching capture or a changed Result brings an archived board into scope. Later arrivals stay in scope across restarts. An approved program can wait for its first Result in an empty folder. A retry requires the original board's Result and captures before inspection can continue.
+
+## Earlier release — 2026-10-03
+
+- **RECIPE / PROGRAM** in **SETTING → DATA SOURCE** selects one recipe/product/table.
+  Images are assigned against the full Result archive before filtering, so choosing a
+  program does not reassign another program's images. Counts, previews, models and trials
+  follow the selection; switching programs invalidates the previous trial.
+  **SPEC** beside this dropdown edits **Max Inner / Max Outer (mm)** only for the selected
+  program. The button displays its saved limits, never the latest limits from another program.
+  **SAVE SPEC** persists finite, non-negative values; **CANCEL** discards edits.
   The Production toolbar uses **SETTING** to access the three workflow tabs.
   Production first requires a complete, confident GOOD model result, then measures the
   saved A/B side on each new original image and applies the inspected route's SPEC.
   A known exceeded limit is NG; unavailable or incomplete measurement is FAULT/HOLD.
-  The latest SPEC displayed on the button is informational; inspection always selects
-  the limits belonging to the actual board route.
+  Production uses the exact saved program identity for model and SPEC selection. A different
+  recipe is excluded even when its ProductId/table match. CAPTURE DATA and RETRY HELD BOARD
+  buttons have been removed; capture validation and durable recovery checks remain enforced.
 - **START AUTO** polls for new stable Result files and their complete image sets. It waits
   for the next board instead of stopping at the end of the loaded queue. SQLite claims
   prevent duplicate processing across restarts. Results and images are stored in the app's
@@ -25,7 +43,37 @@ and training a DINOv2-based GOOD / NG classifier. The production UI is in Englis
   Source hashes are checked again when evidence is recorded. A result arriving after HOLD
   is recorded as FAULT, and only one app instance can use a runtime configuration.
   FAULT is displayed as **FAULT / HOLD**, separately from a measured/classified NG.
+- Production archives every readable cut as native-resolution `cut_####_original.jpeg`
+  and the exact model-crop `cut_####_sobel.jpeg`, using JPEG quality 100 and 4:4:4 sampling
+  when supported. The worker writes these before committing the board result, reusing
+  decoded crops for the overview. Each attempt has its own date/program/SN directory
+  containing `overview.jpeg` and `inspection.json` with predictions, SPEC, measurements,
+  source/output hashes and final status. Files are flushed and atomically replaced.
+  Export or audit recording failure prevents PASS; a 256 MB free-space reserve holds
+  production before archiving. `production_jpeg_quality` (90–100) and
+  `production_min_free_mb` configure these defaults. Images are not automatically deleted;
+  plan storage/backup capacity for sustained operation. Native resolution preserves camera
+  detail; JPEG is lossy and enlarging beyond that detail cannot create sharper pixels.
+- Runtime events and worker error traces are written as UTF-8 JSON lines in `logs/avtr.jsonl`,
+  rotating at 10 MB with ten backups. SQLite remains the durable decision history.
+  The 2026-10-03 suite passed 307 tests. A short synthetic stress run committed 200 boards
+  and 1,000 JPEGs through the real Sobel/SPEC/archive pipeline with a stub predictor,
+  reopening SQLite ten times with no pending claims. All 32 supplied images also exported
+  at 1440×1080 (Original) / 640×640 (Sobel). These checks do not establish days-long uptime,
+  real model accuracy, physical mm calibration or machine/PLC integration.
 - Full HD (1920×1080) layout, maximized on launch, with previews fitted to the available space.
+- Settings opens on DATA SOURCE and retains an already loaded source even when the selected
+  program has no matching images. Initial loading and explicit source refresh run in a
+  cancellable worker; training/testing/production controls remain locked while it loads.
+  Source snapshots still detect Result changes before testing/saving. Directory metadata
+  is reused for regular CSV files, and image previews decode each Original once.
+  On the supplied 21,842-panel export, measured reopen time fell from 7.09 s to 0.003 s,
+  while complete source loading fell from 5.01 s to 1.39 s (local measurements).
+- SOBEL PARAMETERS also exposes Edge contrast (90–100%), Horizontal/Vertical edges (0–2),
+  and Smoothing spread (0/AUTO–10). These edit the existing saved Sobel contract; changed
+  parameters invalidate prior test approval and require matching image preparation/model.
+  Train/Test cards stay compact at their content height, with actions adjacent to their status;
+  smaller windows retain scrolling. The 2026-10-04 full suite passed 312 tests.
 - Stable Sobel preview scale when navigating images or resizing the workspace.
 - Shared image labels and preparation settings between **2 SOBEL TUNING** and **3 TRAIN IMAGES**.
 - Training button: **START TRAIN THE MODEL**.
@@ -82,17 +130,30 @@ Do not copy `config.example.json` unchanged: its machine paths are examples.
 
 ## Image workflow
 
-1. **DATA SOURCE:** choose `SepData`, `Picture`, the corresponding `Sep.Net`, or their parent.
-   Multiple exports require an explicit choice; a single ProductId and unambiguous panel assignments
-   are required for the completed Settings workflow.
-2. **SOBEL TUNING:** review Original / Sobel, adjust parameters, and save images as GOOD or NG.
+1. **DATA SOURCE:** choose the machine folder containing both `Sep.Net` and `SepData`.
+   Selecting either subfolder or `SepData/Picture` resolves the same machine. Settings requires
+   the pair and reads images only from `SepData/Picture`, excluding program resources.
+   Choose **RECIPE / PROGRAM**, enter the CUT count from that program, and set its **SPEC**. A mixed archive is
+   supported, but the completed workflow uses one selected recipe/product/table and only its
+   matched images. Recipes without matching Result records cannot borrow another program's data.
+   **ALL SOURCE IMAGES / SELECT RECIPE** previews the source images without assigning a program.
+2. **SOBEL TUNING:** review Original / Sobel. **Edge smoothing** controls Gaussian blur,
+   **Edge detail** controls Sobel kernel size, **Noise removal** removes faint pixels,
+   and **Edge brightness** controls gain. For thinner lines such as CUT 04, try smoothing 3
+   and detail 3 instead of 7. Smaller kernels can also expose more noise. Save the reviewed
+   images as GOOD or NG. Opening this panel retains all stored preprocessing values.
 3. **TRAIN IMAGES:** review the shared examples and press **START TRAIN THE MODEL**.
    At least five eligible saved examples of each class are required to start.
    This minimum alone does not establish model quality.
 4. **TEST ALL … IMAGES:** test the matching model against the selected image set.
 5. **START TEST & SAVE SETTINGS:** save only after successful testing with unchanged inputs.
 
-Checkpoints must match the ProductId and `sobel-magnitude-v1` preprocessing contract.
+Newly selected programs use separate checkpoint identities derived from recipe name,
+ProductId and table, plus the `sobel-magnitude-v1` preprocessing contract. Older checkpoints
+that identify only a ProductId are not reused by the new program selector; train and test
+the selected program first. Existing checkpoint files and runtime configuration are preserved.
+Production cannot inspect an unbound legacy configuration; save the selected program's
+tested Settings before starting AUTO.
 Missing identity is rejected. The model quality gate requires validation accuracy of at least
 80%, recall of at least 50% for each class, and consistent validation counts.
 Missing images, changed source data, invalid model output, or low-confidence GOOD predictions
@@ -107,16 +168,16 @@ prevent release in the simulated production gate.
    ProductId, recipe content hash, table, program, layer and cut point. A matching
    **SAVE EDGE** confirmation is required. The next board reuses only the side;
    its contour, normal PCB zero and geometry are read again.
-3. Set the inspected recipe's **SPEC**. Use **CAPTURE DATA** on **1 DATA SOURCE** to
-   select the folder containing per-capture JSON records. An empty configuration can
-   use the reference manifest selected in edge review for historical replay.
+3. Set the selected program's **SPEC** on **DATA SOURCE**. Select **CAPTURE JSON FOLDER**
+   for the live capture records. Existing configurations can also specify an explicit JSON file.
 4. Close **SETTING**, press **ACK / RESET**, then **START AUTO**. New files must remain
    unchanged for the configured stability interval (default 2 seconds). A Result plus
    every expected cut and matching capture geometry is required. Missing data is allowed
    a settling interval (default 30 seconds) before being recorded as FAULT/HOLD.
 5. A board advances only after model and SPEC both pass. NG/FAULT stops AUTO.
-   **RETRY HELD BOARD** on DATA SOURCE permits an explicit retry of the latest held or
-   interrupted board; close Settings, ACK, then START AUTO. Prior attempts are retained.
+   For a PENDING or SOURCE_CHANGED board, inspect the cause and open **SETTING → DATA SOURCE**.
+   The contextual retry button authorizes another inspection for the displayed held board.
+   Close Settings, acknowledge and restart AUTO. Earlier attempts remain in the history.
 
 The capture reader accepts the existing `nominal-router-reference-v1` manifests and
 `recorded-router-captures-v1`. The latter has `source_files` with immutable path/SHA256
@@ -200,7 +261,7 @@ Reference provenance retains `production_reference_verified=false`.
 
 The 2026-10-03 resilience revision adds interrupted/late results, malformed configuration,
 changing source files, duplicate identities, Unicode paths and a 100-board synthetic soak.
-All **277 tests** passed, along with repository-wide Ruff lint and formatting checks.
+All **291 tests** passed, along with repository-wide Ruff lint and formatting checks.
 The soak runs real Sobel measurements and SQLite recording with a classifier stub,
 including 90 GOOD and 10 SPEC NG results, without duplicate attempts.
 An intake-only benchmark with 2,001 synthetic Result files reduced median polling time
@@ -254,6 +315,7 @@ These local data and model files are not included in this repository.
 - `router_vision/live_source.py`: stable-file intake and recovery checks.
 - `router_vision/production_measurement.py`, `spec.py`: classifier/Sobel/SPEC decision stages.
 - `router_vision/production_store.py`, `production_evidence.py`: claims, durable history and evidence.
+- `router_vision/production_archive.py`, `runtime_log.py`: native cut JPEGs and rotating event logs.
 - `router_vision/images.py`: common image loading, including Windows Unicode paths.
 - `RouterVisionStudio/router_vision/`: source import, preprocessing, model, reference and UI modules.
 - `RouterVisionStudio/tests/`: automated tests using temporary/synthetic data.

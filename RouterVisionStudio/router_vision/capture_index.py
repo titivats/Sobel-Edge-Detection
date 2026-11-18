@@ -2,11 +2,71 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from .machine_reference import load_manifest
 from .training_edge import load_edge_review
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _index_records(manifest):
+    """Bind each cut to its own record and the shared geometry/source contract."""
+    records = manifest.get("images", [])
+    if not isinstance(records, list):
+        raise ValueError("Capture images must be a list.")
+    records = [
+        r for r in records if isinstance(r, dict) and isinstance(r.get("reference_context"), dict)
+    ]
+    sources = {
+        str(Path(s["path"]).resolve()): s.get("sha256")
+        for s in manifest.get("source_files", [])
+        if isinstance(s, dict) and isinstance(s.get("path"), str)
+    }
+    result_paths = {
+        str(Path(r["result_path"]).resolve())
+        for r in records
+        if isinstance(r.get("result_path"), str)
+    }
+    image_names = {r["name"] for r in records if isinstance(r.get("name"), str)}
+    image_sources = {}
+    shared_sources = {}
+    for path, digest in sources.items():
+        name = Path(path).name
+        if name in image_names:
+            image_sources.setdefault(name, {})[path] = digest
+        elif path not in result_paths:
+            shared_sources[path] = digest
+
+    # Appending a board adds its Result, pictures and cut records. These must not
+    # invalidate another board, while changes to shared recipe/log inputs must.
+    header = {
+        key: value for key, value in manifest.items() if key not in ("images", "source_files")
+    }
+    header_sha = _digest([header, shared_sources])
+    identities = []
+    for record in records:
+        context = record["reference_context"]
+        identity = {
+            key: record[key]
+            for key in ("name", "csv_sn", "cut_point", "result_file")
+            if key in record
+        }
+        identity["reference_context"] = {
+            key: context[key] for key in ("product_id", "table") if key in context
+        }
+        cut_sources = dict(image_sources.get(record.get("name"), {}))
+        if record.get("result_path"):
+            result_path = str(Path(record["result_path"]).resolve())
+            cut_sources[result_path] = sources.get(result_path)
+        identity["capture_sha256"] = _digest([header_sha, cut_sources, record])
+        identity["source_paths"] = tuple(cut_sources)
+        identities.append(identity)
+    return identities, shared_sources
 
 
 class CaptureReferences:
@@ -16,6 +76,8 @@ class CaptureReferences:
         self.location = Path(location).resolve() if location else None
         self._cache = {}
         self._by_panel = {}
+        self.result_files = set()
+        self.has_unnamed_results = False
         self._initialized = False
         self._validated = {}
 
@@ -39,41 +101,40 @@ class CaptureReferences:
                 if previous is not None and previous[0] == stamp:
                     current[path] = previous
                     continue
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                records = raw.get("images", [])
-                if not isinstance(records, list):
-                    raise ValueError("Capture images must be a list.")
-                identities = []
-                for record in records:
-                    if not isinstance(record, dict) or not isinstance(
-                        record.get("reference_context"), dict
-                    ):
-                        continue
-                    context = record["reference_context"]
-                    identity = {
-                        key: record[key]
-                        for key in ("name", "csv_sn", "cut_point", "result_file")
-                        if key in record
-                    }
-                    identity["reference_context"] = {
-                        key: context[key] for key in ("product_id", "table") if key in context
-                    }
-                    identities.append(identity)
-                current[path] = stamp, identities
+                raw_bytes = path.read_bytes()
+                identities, shared_sources = _index_records(json.loads(raw_bytes.decode("utf-8")))
+                current[path] = (
+                    stamp,
+                    identities,
+                    shared_sources,
+                    hashlib.sha256(raw_bytes).hexdigest(),
+                )
                 changed = True
-            except (OSError, ValueError, AttributeError):
+            except (OSError, ValueError, AttributeError, TypeError):
                 # A writer may not have finished yet. Missing geometry never permits PASS.
                 changed = True
         if changed or current.keys() != self._cache.keys() or not self._initialized:
             self._by_panel = {}
-            for path, (_, records) in current.items():
+            self.result_files = set()
+            self.has_unnamed_results = False
+            for path, (_, records, _, _) in current.items():
                 for record in records:
                     context = record.get("reference_context")
                     if isinstance(context, dict) and isinstance(context.get("product_id"), str):
                         identity = str(record.get("csv_sn")), context.get("product_id")
                         self._by_panel.setdefault(identity, []).append((path, record))
+                        if isinstance(record.get("result_file"), str):
+                            self.result_files.add(record["result_file"])
+                        else:
+                            self.has_unnamed_results = True
         self._cache = current
         self._initialized = True
+
+    def source_paths(self, path):
+        return self._cache[path][2]
+
+    def manifest_sha256(self, path):
+        return self._cache[path][3]
 
     def records_for_run(self, run):
         if not self._initialized:

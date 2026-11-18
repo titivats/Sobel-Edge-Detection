@@ -1,0 +1,2 @@
+release/AVTR-Setup-x64.exe filter=lfs diff=lfs merge=lfs -text
+release/*.txt -text whitespace=trailing-space,space-before-tab,cr-at-eol
